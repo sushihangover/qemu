@@ -607,6 +607,8 @@ enum arm_features {
     ARM_FEATURE_NEON,
     ARM_FEATURE_THUMB_DIV, /* divide supported in Thumb encoding */
     ARM_FEATURE_M, /* Microcontroller profile.  */
+    ARM_FEATURE_M0, /* Cortex-M0(+) ARMv6-M architecture Microcontroller profile.  */
+    ARM_FEATURE_V6_M,
     ARM_FEATURE_OMAPCP, /* OMAP specific CP15 ops handling.  */
     ARM_FEATURE_THUMB2EE,
     ARM_FEATURE_V7MP,    /* v7 Multiprocessing Extensions */
@@ -1041,7 +1043,8 @@ bool write_cpustate_to_list(ARMCPU *cpu);
    Note the M in older cores (eg. ARM7TDMI) stands for Multiply. These are
    conventional cores (ie. Application or Realtime profile).  */
 
-#define IS_M(env) arm_feature(env, ARM_FEATURE_M)
+// #define IS_M(env) arm_feature(env, ARM_FEATURE_M) 
+#define IS_M(env) (arm_feature(env, ARM_FEATURE_M) | arm_feature(env, ARM_FEATURE_M0))
 
 #define ARM_CPUID_TI915T      0x54029152
 #define ARM_CPUID_TI925T      0x54029252

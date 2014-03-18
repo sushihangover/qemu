@@ -2876,6 +2876,11 @@ static inline void arm_log_exception(int idx)
     }
 }
 
+void arm_v6m_cpu_do_interrupt(CPUState *cs)
+{
+	arm_v7m_cpu_do_interrupt(cs);
+}
+
 void arm_v7m_cpu_do_interrupt(CPUState *cs)
 {
     ARMCPU *cpu = ARM_CPU(cs);

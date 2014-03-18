@@ -302,6 +302,12 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
             set_feature(env, ARM_FEATURE_V6);
         }
     }
+    if (arm_feature(env, ARM_FEATURE_V6_M)) {
+        set_feature(env, ARM_FEATURE_VAPA);
+        set_feature(env, ARM_FEATURE_THUMB2);
+        set_feature(env, ARM_FEATURE_MPIDR);
+		set_feature(env, ARM_FEATURE_V6);
+    }
     if (arm_feature(env, ARM_FEATURE_V6K)) {
         set_feature(env, ARM_FEATURE_V6);
         set_feature(env, ARM_FEATURE_MVFR);
@@ -572,6 +578,62 @@ static void arm_v7m_class_init(ObjectClass *oc, void *data)
     cc->do_interrupt = arm_v7m_cpu_do_interrupt;
 #endif
 }
+
+// Cortex-M0
+static void cortex_m0_initfn(Object *obj)
+{
+	// ARMv6-M
+	// No cache, 
+	// No TCM, 
+	// optional MPU with 8 regions
+	// Microcontroller profile, Thumb + Thumb-2 subset (BL, MRS, MSR, ISB, DSB, DMB),[10]
+	// hardware multiply instruction (optional small), 
+	// optional system timer, 
+	// optional bit-banding memory
+    ARMCPU *cpu = ARM_CPU(obj);
+    // This includes Thumb2 but M0(+) only has Thumb-2 subset (BL, MRS, MSR, ISB, DSB, DMB)
+    // set_feature(&cpu->env, ARM_FEATURE_M);
+    set_feature(&cpu->env, ARM_FEATURE_M0);
+    set_feature(&cpu->env, ARM_FEATURE_V6);
+    set_feature(&cpu->env, ARM_FEATURE_V6_M);
+    // Cortex-M0 has no mpu | set_feature(&cpu->env, ARM_FEATURE_MPU);
+    // MIDR (c0 register) is a not in Cortex-M, assuming this is an 'A' core carryover?
+    cpu->midr = 0x00000000;
+}
+
+// Cortex-M0+
+static void cortex_m0p_initfn(Object *obj)
+{
+	// ARMv6-M
+	// No cache, 
+	// No TCM, 
+	// optional MPU with 8 regions
+	// Microcontroller profile, Thumb + Thumb-2 subset (BL, MRS, MSR, ISB, DSB, DMB),[10]
+	// hardware multiply instruction (optional small), 
+	// optional system timer, 
+	// optional bit-banding memory
+    ARMCPU *cpu = ARM_CPU(obj);
+    // This includes Thumb2 but M0(+) only has Thumb-2 subset (BL, MRS, MSR, ISB, DSB, DMB)
+    //set_feature(&cpu->env, ARM_FEATURE_M);
+    //set_feature(&cpu->env, ARM_FEATURE_V7);
+    set_feature(&cpu->env, ARM_FEATURE_V6);
+    set_feature(&cpu->env, ARM_FEATURE_THUMB_DIV);
+    set_feature(&cpu->env, ARM_FEATURE_M0);
+    set_feature(&cpu->env, ARM_FEATURE_V6_M);
+    // Cortex-M0 has no mpu | set_feature(&cpu->env, ARM_FEATURE_MPU);
+    // MIDR (c0 register) is a not in Cortex-M, assuming this is an 'A' core carryover?
+    cpu->midr = 0x00000000;
+}
+
+// Cortex-M0+
+static void arm_v6m_class_init(ObjectClass *oc, void *data)
+{
+#ifndef CONFIG_USER_ONLY
+    CPUClass *cc = CPU_CLASS(oc);
+    cc->do_interrupt = arm_v6m_cpu_do_interrupt;
+#endif
+}
+
 
 static const ARMCPRegInfo cortexa8_cp_reginfo[] = {
     { .name = "L2LOCKDOWN", .cp = 15, .crn = 9, .crm = 0, .opc1 = 1, .opc2 = 0,
@@ -959,6 +1021,14 @@ static const ARMCPUInfo arm_cpus[] = {
     { .name = "arm1136",     .initfn = arm1136_initfn },
     { .name = "arm1176",     .initfn = arm1176_initfn },
     { .name = "arm11mpcore", .initfn = arm11mpcore_initfn },
+    /*
+    	New ARM Cortex M0+ core definition
+    */
+	{ .name = "cortex-m0plus",   .initfn = cortex_m0p_initfn,
+						 .class_init = arm_v6m_class_init },
+	{ .name = "cortex-m0",   .initfn = cortex_m0_initfn,
+						 .class_init = arm_v6m_class_init },
+
     { .name = "cortex-m3",   .initfn = cortex_m3_initfn,
                              .class_init = arm_v7m_class_init },
     { .name = "cortex-a8",   .initfn = cortex_a8_initfn },

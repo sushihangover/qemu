@@ -40,9 +40,10 @@
 #define ENABLE_ARCH_5TE   arm_feature(env, ARM_FEATURE_V5)
 #define ENABLE_ARCH_5J    0
 #define ENABLE_ARCH_6     arm_feature(env, ARM_FEATURE_V6)
-#define ENABLE_ARCH_6K   arm_feature(env, ARM_FEATURE_V6K)
+#define ENABLE_ARCH_6K    arm_feature(env, ARM_FEATURE_V6K)
 #define ENABLE_ARCH_6T2   arm_feature(env, ARM_FEATURE_THUMB2)
 #define ENABLE_ARCH_7     arm_feature(env, ARM_FEATURE_V7)
+#define ENABLE_ARCH_6_M	  arm_feature(env, ARM_FEATURE_V6_M)
 #define ENABLE_ARCH_8     arm_feature(env, ARM_FEATURE_V8)
 
 #define ARCH(x) do { if (!ENABLE_ARCH_##x) goto illegal_op; } while(0)
@@ -795,7 +796,7 @@ static inline void gen_bx(DisasContext *s, TCGv_i32 var)
 static inline void store_reg_bx(CPUARMState *env, DisasContext *s,
                                 int reg, TCGv_i32 var)
 {
-    if (reg == 15 && ENABLE_ARCH_7) {
+    if (reg == 15 && (ENABLE_ARCH_7 | ENABLE_ARCH_6_M) ) {
         gen_bx(s, var);
     } else {
         store_reg(s, reg, var);
@@ -7267,8 +7268,10 @@ static void disas_arm_insn(CPUARMState * env, DisasContext *s)
     s->pc += 4;
 
     /* M variants do not implement ARM mode.  */
-    if (IS_M(env))
+    if ( IS_M(env) ) {
+    	printf("M core but in ARM mode?");
         goto illegal_op;
+	}
     cond = insn >> 28;
     if (cond == 0xf){
         /* In ARMv3 and v4 the NV condition is UNPREDICTABLE; we
@@ -8630,6 +8633,7 @@ static void disas_arm_insn(CPUARMState * env, DisasContext *s)
             break;
         default:
         illegal_op:
+        	printf("illegal_op\n");
             gen_exception_insn(s, 4, EXCP_UDEF);
             break;
         }
@@ -8719,6 +8723,24 @@ gen_thumb2_data_op(DisasContext *s, int op, int conds, uint32_t shifter_out,
     return 0;
 }
 
+#define ARM_EXT_V6_M 1
+struct opcode32
+{
+  unsigned long arch;		/* Architecture defining this insn.  */
+  unsigned long value, mask;	/* Recognise insn if (op&mask)==value.  */
+  const char *assembler;	/* How to disassemble this insn.  */
+};
+static const struct opcode32 allowed_t32_m0_opcodes[] =
+{
+  {ARM_EXT_V6_M, 0xf000d000, 0xf800d000, "bl%c\t%B%x"},
+  {ARM_EXT_V6_M, 0xf57ff050, 0xfffffff0, "dmb\t%U"},
+  {ARM_EXT_V6_M, 0xf57ff040, 0xfffffff0, "dsb\t%U"},
+  {ARM_EXT_V6_M, 0xf57ff060, 0xfffffff0, "isb\t%U"},
+  {ARM_EXT_V6_M, 0x0120f000, 0x0db0f000, "msr%c\t%22?SCPSR%C, %o"},
+  {ARM_EXT_V6_M, 0x010f0000, 0x0fbf0fff, "mrs%c\t%12-15r, %22?SCPSR"},  
+  {0, 0, 0, 0}
+};
+
 /* Translate a 32-bit thumb instruction.  Returns nonzero if the instruction
    is not legal.  */
 static int disas_thumb2_insn(CPUARMState *env, DisasContext *s, uint16_t insn_hw1)
@@ -8780,6 +8802,39 @@ static int disas_thumb2_insn(CPUARMState *env, DisasContext *s, uint16_t insn_hw
     insn = arm_lduw_code(env, s->pc, s->bswap_code);
     s->pc += 2;
     insn |= (uint32_t)insn_hw1 << 16;
+
+	// Cortex-M0(+)
+	//  disas/arm.c does not use the opcode->arch field(?) to build a valid list for a core, 
+	// so till that is cleaned up, create exception i.e. goto illegal_op
+	if (arm_feature (env, ARM_FEATURE_M0))
+	{
+		//fprintf(stderr, "arm_feature (env, ARM_FEATURE_M0)) 0x%x\n", insn);
+		// Cortex-M0(+) only supports Thumb-2 subset (BL, MRS, MSR, ISB, DSB, DMB)
+		// ARCH(6_M);
+		// If allowed, continue, otherwise hard fault
+		//for (int ii=0; ii++; ii<allowed_t32_m0_opcodes.length) {
+		const struct opcode32 *insn_foo;
+		bool pass = false;
+		for (insn_foo = allowed_t32_m0_opcodes; insn_foo->assembler; insn_foo++)
+		{
+			/* Recognise insn if (op&mask)==value.  */
+			if ((insn & insn_foo->mask) == insn_foo->value)  {
+				fprintf(stderr, "found 0x%x : %s \n", insn, insn_foo->assembler);
+				pass = true;
+				break;
+			} else {
+				//fprintf(stderr, "NOT found 0x%x : %s \n", insn, insn_foo->assembler);
+			}
+		}
+		if (!pass) 
+		{
+			fprintf(stderr, "NOT found 0x%x \n", insn);
+			//return 1;
+		} else {
+			fprintf(stderr, "pass 0x%x \n", insn);			
+		}
+	}
+
 
     if ((insn & 0xf800e800) != 0xf000e800) {
         ARCH(6T2);
