@@ -266,7 +266,7 @@ static void arm_cpu_post_init(Object *obj)
                                  &error_abort);
     }
 
-    if (!arm_feature(&cpu->env, ARM_FEATURE_M)) {
+    if (!arm_feature(&cpu->env, ARM_FEATURE_M0)) {
         qdev_property_add_static(DEVICE(obj), &arm_cpu_reset_hivecs_property,
                                  &error_abort);
     }
@@ -296,7 +296,7 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
         set_feature(env, ARM_FEATURE_VAPA);
         set_feature(env, ARM_FEATURE_THUMB2);
         set_feature(env, ARM_FEATURE_MPIDR);
-        if (!arm_feature(env, ARM_FEATURE_M)) {
+        if (!arm_feature(env, ARM_FEATURE_M0)) {
             set_feature(env, ARM_FEATURE_V6K);
         } else {
             set_feature(env, ARM_FEATURE_V6);
@@ -308,14 +308,14 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
     }
     if (arm_feature(env, ARM_FEATURE_V6)) {
         set_feature(env, ARM_FEATURE_V5);
-        if (!arm_feature(env, ARM_FEATURE_M)) {
+        if (!arm_feature(env, ARM_FEATURE_M0)) {
             set_feature(env, ARM_FEATURE_AUXCR);
         }
     }
     if (arm_feature(env, ARM_FEATURE_V5)) {
         set_feature(env, ARM_FEATURE_V4T);
     }
-    if (arm_feature(env, ARM_FEATURE_M)) {
+    if (arm_feature(env, ARM_FEATURE_M0)) {
         set_feature(env, ARM_FEATURE_THUMB_DIV);
     }
     if (arm_feature(env, ARM_FEATURE_ARM_DIV)) {
@@ -556,11 +556,45 @@ static void arm11mpcore_initfn(Object *obj)
     cpu->reset_auxcr = 1;
 }
 
+static void cortex_m0_initfn(Object *obj)
+{
+    ARMCPU *cpu = ARM_CPU(obj);
+    set_feature(&cpu->env, ARM_FEATURE_V7);
+	set_feature(&cpu->env, ARM_FEATURE_M0);
+    cpu->midr = 0x00000001;
+}
+
+static void cortex_m0plus_initfn(Object *obj)
+{
+    ARMCPU *cpu = ARM_CPU(obj);
+	set_feature(&cpu->env, ARM_FEATURE_VAPA);
+	set_feature(&cpu->env, ARM_FEATURE_THUMB2);
+	set_feature(&cpu->env, ARM_FEATURE_MPIDR);
+	set_feature(&cpu->env, ARM_FEATURE_V6);
+	set_feature(&cpu->env, ARM_FEATURE_V5);
+	set_feature(&cpu->env, ARM_FEATURE_V4T);
+    set_feature(&cpu->env, ARM_FEATURE_THUMB_DIV);
+	set_feature(&cpu->env, ARM_FEATURE_M0);
+	set_feature(&cpu->env, ARM_FEATURE_M0PLUS);
+    cpu->midr = 0x00000002;
+}
+
+static void arm_v6m_class_init(ObjectClass *oc, void *data)
+{
+#ifndef CONFIG_USER_ONLY
+    CPUClass *cc = CPU_CLASS(oc);
+
+    cc->do_interrupt = arm_v6m_cpu_do_interrupt;
+#endif
+}
+
 static void cortex_m3_initfn(Object *obj)
 {
     ARMCPU *cpu = ARM_CPU(obj);
     set_feature(&cpu->env, ARM_FEATURE_V7);
-    set_feature(&cpu->env, ARM_FEATURE_M);
+    set_feature(&cpu->env, ARM_FEATURE_M3);
+    set_feature(&cpu->env, ARM_FEATURE_M0PLUS);
+    set_feature(&cpu->env, ARM_FEATURE_M0);
     cpu->midr = 0x410fc231;
 }
 
@@ -961,6 +995,10 @@ static const ARMCPUInfo arm_cpus[] = {
     { .name = "arm11mpcore", .initfn = arm11mpcore_initfn },
     { .name = "cortex-m3",   .initfn = cortex_m3_initfn,
                              .class_init = arm_v7m_class_init },
+    { .name = "cortex-m0",   .initfn = cortex_m0_initfn,
+                             .class_init = arm_v6m_class_init },
+    { .name = "cortex-m0plus",   .initfn = cortex_m0plus_initfn,
+                             .class_init = arm_v6m_class_init },
     { .name = "cortex-a8",   .initfn = cortex_a8_initfn },
     { .name = "cortex-a9",   .initfn = cortex_a9_initfn },
     { .name = "cortex-a15",  .initfn = cortex_a15_initfn },

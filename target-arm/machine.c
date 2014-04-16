@@ -85,11 +85,11 @@ static bool m_needed(void *opaque)
     ARMCPU *cpu = opaque;
     CPUARMState *env = &cpu->env;
 
-    return arm_feature(env, ARM_FEATURE_M);
+    return arm_feature(env, ARM_FEATURE_M0);
 }
 
 static const VMStateDescription vmstate_m = {
-    .name = "cpu/m",
+    .name = "cpu/m3",
     .version_id = 1,
     .minimum_version_id = 1,
     .minimum_version_id_old = 1,
@@ -100,6 +100,22 @@ static const VMStateDescription vmstate_m = {
         VMSTATE_UINT32(env.v7m.control, ARMCPU),
         VMSTATE_INT32(env.v7m.current_sp, ARMCPU),
         VMSTATE_INT32(env.v7m.exception, ARMCPU),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_m0 = {
+    .name = "cpu/m0",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .minimum_version_id_old = 1,
+    .fields = (VMStateField[]) {
+        VMSTATE_UINT32(env.v6m.other_sp, ARMCPU),
+        VMSTATE_UINT32(env.v6m.vecbase, ARMCPU),
+        VMSTATE_UINT32(env.v6m.basepri, ARMCPU),
+        VMSTATE_UINT32(env.v6m.control, ARMCPU),
+        VMSTATE_INT32(env.v6m.current_sp, ARMCPU),
+        VMSTATE_INT32(env.v6m.exception, ARMCPU),
         VMSTATE_END_OF_LIST()
     }
 };

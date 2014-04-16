@@ -238,6 +238,16 @@ typedef struct CPUARMState {
         int pending_exception;
     } v7m;
 
+    struct {
+        uint32_t other_sp;
+        uint32_t vecbase;
+        uint32_t basepri;
+        uint32_t control;
+        int current_sp;
+        int exception;
+        int pending_exception;
+    } v6m;
+
     /* Thumb-2 EE state.  */
     uint32_t teecr;
     uint32_t teehbr;
@@ -481,6 +491,8 @@ void cpsr_write(CPUARMState *env, uint32_t val, uint32_t mask);
 /* Return the current xPSR value.  */
 static inline uint32_t xpsr_read(CPUARMState *env)
 {
+    // Next to fix for Cortex-M0/M0+
+	printf("xpsr_read(CPUARMState *env) |  Return the current xPSR value.\n");
     int ZF;
     ZF = (env->ZF == 0);
     return (env->NF & 0x80000000) | (ZF << 30)
@@ -512,6 +524,8 @@ static inline void xpsr_write(CPUARMState *env, uint32_t val, uint32_t mask)
         env->condexec_bits |= (val >> 8) & 0xfc;
     }
     if (mask & 0x1ff) {
+        // Next to fix for Cortex-M0/M0+
+    	printf("xpsr_write |  Set the xPSR. value.\n");
         env->v7m.exception = val & 0x1ff;
     }
 }
@@ -606,7 +620,11 @@ enum arm_features {
     ARM_FEATURE_VFP_FP16,
     ARM_FEATURE_NEON,
     ARM_FEATURE_THUMB_DIV, /* divide supported in Thumb encoding */
-    ARM_FEATURE_M, /* Microcontroller profile.  */
+    ARM_FEATURE_M0, /* Microcontroller profile.  */
+    ARM_FEATURE_M0PLUS, /* Microcontroller profile.  */
+    ARM_FEATURE_M3, /* Microcontroller profile.  */
+    ARM_FEATURE_M4, /* Microcontroller profile.  */
+    ARM_FEATURE_M4F, /* Microcontroller profile.  */
     ARM_FEATURE_OMAPCP, /* OMAP specific CP15 ops handling.  */
     ARM_FEATURE_THUMB2EE,
     ARM_FEATURE_V7MP,    /* v7 Multiprocessing Extensions */
@@ -1040,8 +1058,7 @@ bool write_cpustate_to_list(ARMCPU *cpu);
 /* Does the core conform to the the "MicroController" profile. e.g. Cortex-M3.
    Note the M in older cores (eg. ARM7TDMI) stands for Multiply. These are
    conventional cores (ie. Application or Realtime profile).  */
-
-#define IS_M(env) arm_feature(env, ARM_FEATURE_M)
+#define IS_M(env)  arm_feature(env, ARM_FEATURE_M0)
 
 #define ARM_CPUID_TI915T      0x54029152
 #define ARM_CPUID_TI925T      0x54029252
@@ -1137,11 +1154,13 @@ static inline int cpu_mmu_index (CPUARMState *env)
 static inline void cpu_get_tb_cpu_state(CPUARMState *env, target_ulong *pc,
                                         target_ulong *cs_base, int *flags)
 {
-    if (is_a64(env)) {
+    if (is_a64(env)) 
+    {
         *pc = env->pc;
         *flags = ARM_TBFLAG_AARCH64_STATE_MASK
             | (arm_current_pl(env) << ARM_TBFLAG_AA64_EL_SHIFT);
-    } else {
+    } else 
+	{
         int privmode;
         *pc = env->regs[15];
         *flags = (env->thumb << ARM_TBFLAG_THUMB_SHIFT)
@@ -1149,19 +1168,25 @@ static inline void cpu_get_tb_cpu_state(CPUARMState *env, target_ulong *pc,
             | (env->vfp.vec_stride << ARM_TBFLAG_VECSTRIDE_SHIFT)
             | (env->condexec_bits << ARM_TBFLAG_CONDEXEC_SHIFT)
             | (env->bswap_code << ARM_TBFLAG_BSWAP_CODE_SHIFT);
-        if (arm_feature(env, ARM_FEATURE_M)) {
+        if (arm_feature(env, ARM_FEATURE_M3)) 
+        {
             privmode = !((env->v7m.exception == 0) && (env->v7m.control & 1));
-        } else {
+        } else if (arm_feature(env, ARM_FEATURE_M0)) 
+        {
+            privmode = !((env->v6m.exception == 0) && (env->v6m.control & 1));
+        } else 
+        {
             privmode = (env->uncached_cpsr & CPSR_M) != ARM_CPU_MODE_USR;
         }
-        if (privmode) {
+        if (privmode) 
+        {
             *flags |= ARM_TBFLAG_PRIV_MASK;
         }
-        if (env->vfp.xregs[ARM_VFP_FPEXC] & (1 << 30)) {
+        if (env->vfp.xregs[ARM_VFP_FPEXC] & (1 << 30)) 
+        {
             *flags |= ARM_TBFLAG_VFPEN_MASK;
         }
     }
-
     *cs_base = 0;
 }
 
