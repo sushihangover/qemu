@@ -483,7 +483,7 @@ static void arm_cpu_realizefn(DeviceState *dev, Error **errp)
         set_feature(env, ARM_FEATURE_VAPA);
         set_feature(env, ARM_FEATURE_THUMB2);
         set_feature(env, ARM_FEATURE_MPIDR);
-		set_feature(env, ARM_FEATURE_V6);
+        set_feature(env, ARM_FEATURE_V6);
     }
     if (arm_feature(env, ARM_FEATURE_V6K)) {
         set_feature(env, ARM_FEATURE_V6);
@@ -781,55 +781,55 @@ static void arm_v7m_class_init(ObjectClass *oc, void *data)
 // Cortex-M0
 static void cortex_m0_initfn(Object *obj)
 {
-	// ARMv6-M
-	// No cache, 
-	// No TCM, 
-	// optional MPU with 8 regions
-	// Microcontroller profile, Thumb + Thumb-2 subset (BL, MRS, MSR, ISB, DSB, DMB),[10]
-	// hardware multiply instruction (optional small), 
-	// optional system timer, 
-	// optional bit-banding memory
-    ARMCPU *cpu = ARM_CPU(obj);
-    // This includes Thumb2 but M0(+) only has Thumb-2 subset (BL, MRS, MSR, ISB, DSB, DMB)
-    // set_feature(&cpu->env, ARM_FEATURE_M);
-    set_feature(&cpu->env, ARM_FEATURE_M0);
-    set_feature(&cpu->env, ARM_FEATURE_V6);
-    set_feature(&cpu->env, ARM_FEATURE_V6_M);
-    // Cortex-M0 has no mpu | set_feature(&cpu->env, ARM_FEATURE_MPU);
-    // MIDR (c0 register) is a not in Cortex-M, assuming this is an 'A' core carryover?
-    cpu->midr = 0x00000000;
+  // ARMv6-M
+  // No cache, 
+  // No TCM, 
+  // optional MPU with 8 regions
+  // Microcontroller profile, Thumb + Thumb-2 subset (BL, MRS, MSR, ISB, DSB, DMB),[10]
+  // hardware multiply instruction (optional small), 
+  // optional system timer, 
+  // optional bit-banding memory
+  ARMCPU *cpu = ARM_CPU(obj);
+  // This includes Thumb2 but M0(+) only has Thumb-2 subset (BL, MRS, MSR, ISB, DSB, DMB)
+  // set_feature(&cpu->env, ARM_FEATURE_M);
+  set_feature(&cpu->env, ARM_FEATURE_M0);
+  set_feature(&cpu->env, ARM_FEATURE_V6);
+  set_feature(&cpu->env, ARM_FEATURE_V6_M);
+  // Cortex-M0 has no mpu | set_feature(&cpu->env, ARM_FEATURE_MPU);
+  // MIDR (c0 register) is a not in Cortex-M, assuming this is an 'A' core carryover?
+  cpu->midr = 0x00000000;
 }
 
 // Cortex-M0+
 static void cortex_m0p_initfn(Object *obj)
 {
-	// ARMv6-M
-	// No cache, 
-	// No TCM, 
-	// optional MPU with 8 regions
-	// Microcontroller profile, Thumb + Thumb-2 subset (BL, MRS, MSR, ISB, DSB, DMB),[10]
-	// hardware multiply instruction (optional small), 
-	// optional system timer, 
-	// optional bit-banding memory
-    ARMCPU *cpu = ARM_CPU(obj);
-    // This includes Thumb2 but M0(+) only has Thumb-2 subset (BL, MRS, MSR, ISB, DSB, DMB)
-    //set_feature(&cpu->env, ARM_FEATURE_M);
-    //set_feature(&cpu->env, ARM_FEATURE_V7);
-    set_feature(&cpu->env, ARM_FEATURE_V6);
-    set_feature(&cpu->env, ARM_FEATURE_THUMB_DIV);
-    set_feature(&cpu->env, ARM_FEATURE_M0);
-    set_feature(&cpu->env, ARM_FEATURE_V6_M);
-    // Cortex-M0 has no mpu | set_feature(&cpu->env, ARM_FEATURE_MPU);
-    // MIDR (c0 register) is a not in Cortex-M, assuming this is an 'A' core carryover?
-    cpu->midr = 0x00000000;
+  // ARMv6-M
+  // No cache, 
+  // No TCM, 
+  // optional MPU with 8 regions
+  // Microcontroller profile, Thumb + Thumb-2 subset (BL, MRS, MSR, ISB, DSB, DMB),[10]
+  // hardware multiply instruction (optional small), 
+  // optional system timer, 
+  // optional bit-banding memory
+  ARMCPU *cpu = ARM_CPU(obj);
+  // This includes Thumb2 but M0(+) only has Thumb-2 subset (BL, MRS, MSR, ISB, DSB, DMB)
+  //set_feature(&cpu->env, ARM_FEATURE_M);
+  //set_feature(&cpu->env, ARM_FEATURE_V7);
+  set_feature(&cpu->env, ARM_FEATURE_V6);
+  set_feature(&cpu->env, ARM_FEATURE_THUMB_DIV);
+  set_feature(&cpu->env, ARM_FEATURE_M0);
+  set_feature(&cpu->env, ARM_FEATURE_V6_M);
+  // Cortex-M0 has no mpu | set_feature(&cpu->env, ARM_FEATURE_MPU);
+  // MIDR (c0 register) is a not in Cortex-M, assuming this is an 'A' core carryover?
+  cpu->midr = 0x00000000;
 }
 
 // Cortex-M0+
 static void arm_v6m_class_init(ObjectClass *oc, void *data)
 {
 #ifndef CONFIG_USER_ONLY
-    CPUClass *cc = CPU_CLASS(oc);
-    cc->do_interrupt = arm_v6m_cpu_do_interrupt;
+  CPUClass *cc = CPU_CLASS(oc);
+  cc->do_interrupt = arm_v6m_cpu_do_interrupt;
 #endif
 }
 
@@ -1123,7 +1123,7 @@ static void pxa270a0_initfn(Object *obj)
 static void pxa270a1_initfn(Object *obj)
 {
     ARMCPU *cpu = ARM_CPU(obj);
-
+    
     cpu->dtb_compatible = "marvell,xscale";
     set_feature(&cpu->env, ARM_FEATURE_V5);
     set_feature(&cpu->env, ARM_FEATURE_XSCALE);
@@ -1226,13 +1226,13 @@ static const ARMCPUInfo arm_cpus[] = {
     /*
     	New ARM Cortex M0+ core definition
     */
-	{ .name = "cortex-m0plus",   .initfn = cortex_m0p_initfn,
-						 .class_init = arm_v6m_class_init },
-	{ .name = "cortex-m0",   .initfn = cortex_m0_initfn,
-						 .class_init = arm_v6m_class_init },
-
+    { .name = "cortex-m0plus",   .initfn = cortex_m0p_initfn,
+      .class_init = arm_v6m_class_init },
+    { .name = "cortex-m0",   .initfn = cortex_m0_initfn,
+      .class_init = arm_v6m_class_init },
+    
     { .name = "cortex-m3",   .initfn = cortex_m3_initfn,
-                             .class_init = arm_v7m_class_init },
+      .class_init = arm_v7m_class_init },
     { .name = "cortex-a8",   .initfn = cortex_a8_initfn },
     { .name = "cortex-a9",   .initfn = cortex_a9_initfn },
     { .name = "cortex-a15",  .initfn = cortex_a15_initfn },

@@ -9192,39 +9192,35 @@ static int disas_thumb2_insn(CPUARMState *env, DisasContext *s, uint16_t insn_hw
     s->pc += 2;
     insn |= (uint32_t)insn_hw1 << 16;
 
-	// Cortex-M0(+)
-	//  disas/arm.c does not use the opcode->arch field(?) to build a valid list for a core, 
-	// so till that is cleaned up, create exception i.e. goto illegal_op
-	if (arm_feature (env, ARM_FEATURE_M0))
-	{
-		//fprintf(stderr, "arm_feature (env, ARM_FEATURE_M0)) 0x%x\n", insn);
-		// Cortex-M0(+) only supports Thumb-2 subset (BL, MRS, MSR, ISB, DSB, DMB)
-		// ARCH(6_M);
-		// If allowed, continue, otherwise hard fault
-		//for (int ii=0; ii++; ii<allowed_t32_m0_opcodes.length) {
-		const struct opcode32 *insn_foo;
-		bool pass = false;
-		for (insn_foo = allowed_t32_m0_opcodes; insn_foo->assembler; insn_foo++)
-		{
-			/* Recognise insn if (op&mask)==value.  */
-			if ((insn & insn_foo->mask) == insn_foo->value)  {
-				fprintf(stderr, "found 0x%x : %s \n", insn, insn_foo->assembler);
-				pass = true;
-				break;
-			} else {
-				//fprintf(stderr, "NOT found 0x%x : %s \n", insn, insn_foo->assembler);
-			}
-		}
-		if (!pass) 
-		{
-			fprintf(stderr, "NOT found 0x%x \n", insn);
-			//return 1;
-		} else {
-			fprintf(stderr, "pass 0x%x \n", insn);			
-		}
-	}
-
-
+    // Cortex-M0(+)
+    //  disas/arm.c does not use the opcode->arch field(?) to build a valid list for a core, 
+    // so till that is cleaned up, create exception i.e. goto illegal_op
+    if (arm_feature (env, ARM_FEATURE_M0)) {
+      // Cortex-M0(+) only supports Thumb-2 subset (BL, MRS, MSR, ISB, DSB, DMB)
+      // ARCH(6_M);
+      // If allowed, continue, otherwise hard fault
+      const struct opcode32 *insn_foo;
+      bool pass = false;
+      for (insn_foo = allowed_t32_m0_opcodes; insn_foo->assembler; insn_foo++)
+        {
+          /* Recognise insn if (op&mask)==value.  */
+          if ((insn & insn_foo->mask) == insn_foo->value)  {
+            fprintf(stderr, "found 0x%x : %s \n", insn, insn_foo->assembler);
+            pass = true;
+            break;
+          } else {
+            //fprintf(stderr, "NOT found 0x%x : %s \n", insn, insn_foo->assembler);
+          }
+        }
+      if (!pass) 
+        {
+          fprintf(stderr, "NOT found 0x%x \n", insn);
+          //return 1;
+        } else {
+        fprintf(stderr, "pass 0x%x \n", insn);			
+      }
+    }
+    
     if ((insn & 0xf800e800) != 0xf000e800) {
         ARCH(6T2);
     }
