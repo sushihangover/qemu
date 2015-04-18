@@ -299,9 +299,7 @@ static int v9fs_xattr_fid_clunk(V9fsPDU *pdu, V9fsFidState *fidp)
 free_out:
     v9fs_string_free(&fidp->fs.xattr.name);
 free_value:
-    if (fidp->fs.xattr.value) {
-        g_free(fidp->fs.xattr.value);
-    }
+    g_free(fidp->fs.xattr.value);
     return retval;
 }
 
@@ -987,8 +985,9 @@ static void v9fs_attach(void *opaque)
      */
     if (!s->migration_blocker) {
         s->root_fid = fid;
-        error_set(&s->migration_blocker, QERR_VIRTFS_FEATURE_BLOCKS_MIGRATION,
-                  s->ctx.fs_root ? s->ctx.fs_root : "NULL", s->tag);
+        error_setg(&s->migration_blocker,
+                   "Migration is disabled when VirtFS export path '%s' is mounted in the guest using mount_tag '%s'",
+                   s->ctx.fs_root ? s->ctx.fs_root : "NULL", s->tag);
         migrate_add_blocker(s->migration_blocker);
     }
 out:
@@ -1951,7 +1950,8 @@ static void v9fs_write(void *opaque)
 
     err = pdu_unmarshal(pdu, offset, "dqd", &fid, &off, &count);
     if (err < 0) {
-        return complete_pdu(s, pdu, err);
+        complete_pdu(s, pdu, err);
+        return;
     }
     offset += err;
     v9fs_init_qiov_from_pdu(&qiov_full, pdu, offset, count, true);

@@ -138,7 +138,6 @@ static const VMStateDescription vmstate_pl330_chan = {
     .name = "pl330_chan",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
     .fields = (VMStateField[]) {
         VMSTATE_UINT32(src, PL330Chan),
         VMSTATE_UINT32(dst, PL330Chan),
@@ -170,7 +169,6 @@ static const VMStateDescription vmstate_pl330_fifo = {
     .name = "pl330_chan",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
     .fields = (VMStateField[]) {
         VMSTATE_VBUFFER_UINT32(buf, PL330Fifo, 1, NULL, 0, buf_size),
         VMSTATE_VBUFFER_UINT32(tag, PL330Fifo, 1, NULL, 0, buf_size),
@@ -195,7 +193,6 @@ static const VMStateDescription vmstate_pl330_queue_entry = {
     .name = "pl330_queue_entry",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
     .fields = (VMStateField[]) {
         VMSTATE_UINT32(addr, PL330QueueEntry),
         VMSTATE_UINT32(len, PL330QueueEntry),
@@ -218,7 +215,6 @@ static const VMStateDescription vmstate_pl330_queue = {
     .name = "pl330_queue",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
     .fields = (VMStateField[]) {
         VMSTATE_STRUCT_VARRAY_UINT32(queue, PL330Queue, queue_size, 1,
                                  vmstate_pl330_queue_entry, PL330QueueEntry),
@@ -279,7 +275,6 @@ static const VMStateDescription vmstate_pl330 = {
     .name = "pl330",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
     .fields = (VMStateField[]) {
         VMSTATE_STRUCT(manager, PL330State, 0, vmstate_pl330_chan, PL330Chan),
         VMSTATE_STRUCT_VARRAY_UINT32(chan, PL330State, num_chnls, 0,
@@ -291,7 +286,7 @@ static const VMStateDescription vmstate_pl330 = {
                        PL330Queue),
         VMSTATE_STRUCT(write_queue, PL330State, 0, vmstate_pl330_queue,
                        PL330Queue),
-        VMSTATE_TIMER(timer, PL330State),
+        VMSTATE_TIMER_PTR(timer, PL330State),
         VMSTATE_UINT32(inten, PL330State),
         VMSTATE_UINT32(int_status, PL330State),
         VMSTATE_UINT32(ev_status, PL330State),
@@ -1571,7 +1566,7 @@ static void pl330_realize(DeviceState *dev, Error **errp)
         s->cfg[1] |= 5;
         break;
     default:
-        error_setg(errp, "Bad value for i-cache_len property: %" PRIx8 "\n",
+        error_setg(errp, "Bad value for i-cache_len property: %" PRIx8,
                    s->i_cache_len);
         return;
     }
@@ -1606,7 +1601,7 @@ static void pl330_realize(DeviceState *dev, Error **errp)
         s->cfg[CFG_CRD] |= 0x4;
         break;
     default:
-        error_setg(errp, "Bad value for data_width property: %" PRIx8 "\n",
+        error_setg(errp, "Bad value for data_width property: %" PRIx8,
                    s->data_width);
         return;
     }

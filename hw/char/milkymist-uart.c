@@ -199,6 +199,7 @@ static void milkymist_uart_realize(DeviceState *dev, Error **errp)
 {
     MilkymistUartState *s = MILKYMIST_UART(dev);
 
+    /* FIXME use a qdev chardev prop instead of qemu_char_get_next_serial() */
     s->chr = qemu_char_get_next_serial();
     if (s->chr) {
         qemu_chr_add_handlers(s->chr, uart_can_rx, uart_rx, uart_event, s);
@@ -221,8 +222,7 @@ static const VMStateDescription vmstate_milkymist_uart = {
     .name = "milkymist-uart",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
-    .fields      = (VMStateField[]) {
+    .fields = (VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, MilkymistUartState, R_MAX),
         VMSTATE_END_OF_LIST()
     }
@@ -235,6 +235,8 @@ static void milkymist_uart_class_init(ObjectClass *klass, void *data)
     dc->realize = milkymist_uart_realize;
     dc->reset = milkymist_uart_reset;
     dc->vmsd = &vmstate_milkymist_uart;
+    /* Reason: realize() method uses qemu_char_get_next_serial() */
+    dc->cannot_instantiate_with_device_add_yet = true;
 }
 
 static const TypeInfo milkymist_uart_info = {

@@ -71,6 +71,9 @@ typedef struct X86CPUClass {
 /**
  * X86CPU:
  * @env: #CPUX86State
+ * @migratable: If set, only migratable flags will be accepted when "enforce"
+ * mode is used, and only migratable flags will be included in the "host"
+ * CPU model.
  *
  * An x86 CPU.
  */
@@ -87,6 +90,10 @@ typedef struct X86CPU {
     bool hyperv_time;
     bool check_cpuid;
     bool enforce_cpuid;
+    bool expose_kvm;
+    bool migratable;
+    bool host_features;
+    int64_t apic_id;
 
     /* if true the CPUID code directly forward host cache leaves to the guest */
     bool cache_info_passthrough;
@@ -116,7 +123,7 @@ static inline X86CPU *x86_env_get_cpu(CPUX86State *env)
 #define ENV_OFFSET offsetof(X86CPU, env)
 
 #ifndef CONFIG_USER_ONLY
-extern const struct VMStateDescription vmstate_x86_cpu;
+extern struct VMStateDescription vmstate_x86_cpu;
 #endif
 
 /**
@@ -124,6 +131,7 @@ extern const struct VMStateDescription vmstate_x86_cpu;
  * @cpu: vCPU the interrupt is to be handled by.
  */
 void x86_cpu_do_interrupt(CPUState *cpu);
+bool x86_cpu_exec_interrupt(CPUState *cpu, int int_req);
 
 int x86_cpu_write_elf64_note(WriteCoreDumpFunction f, CPUState *cpu,
                              int cpuid, void *opaque);
@@ -144,5 +152,8 @@ hwaddr x86_cpu_get_phys_page_debug(CPUState *cpu, vaddr addr);
 
 int x86_cpu_gdb_read_register(CPUState *cpu, uint8_t *buf, int reg);
 int x86_cpu_gdb_write_register(CPUState *cpu, uint8_t *buf, int reg);
+
+void x86_cpu_exec_enter(CPUState *cpu);
+void x86_cpu_exec_exit(CPUState *cpu);
 
 #endif

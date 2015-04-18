@@ -65,7 +65,7 @@ enum {
     DSKCHG  = 0x80,
 };
 
-char test_image[] = "/tmp/qtest.XXXXXX";
+static char test_image[] = "/tmp/qtest.XXXXXX";
 
 #define assert_bit_set(data, mask) g_assert_cmphex((data) & (mask), ==, (mask))
 #define assert_bit_clear(data, mask) g_assert_cmphex((data) & (mask), ==, 0)
@@ -291,7 +291,7 @@ static void test_media_insert(void)
     /* Insert media in drive. DSKCHK should not be reset until a step pulse
      * is sent. */
     qmp_discard_response("{'execute':'change', 'arguments':{"
-                         " 'device':'floppy0', 'target': '%s' }}",
+                         " 'device':'floppy0', 'target': %s, 'arg': 'raw' }}",
                          test_image);
     qmp_discard_response(""); /* ignore event
                                  (FIXME open -> open transition?!) */

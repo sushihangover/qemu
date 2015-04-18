@@ -574,7 +574,7 @@ CharDriverState *chr_baum_init(void)
     int tty;
 
     baum = g_malloc0(sizeof(BaumDriverState));
-    baum->chr = chr = g_malloc0(sizeof(CharDriverState));
+    baum->chr = chr = qemu_chr_alloc();
 
     chr->opaque = baum;
     chr->chr_write = baum_write;
@@ -629,7 +629,7 @@ fail_handle:
 
 static void register_types(void)
 {
-    register_char_driver_qapi("braille", CHARDEV_BACKEND_KIND_BRAILLE, NULL);
+    register_char_driver("braille", CHARDEV_BACKEND_KIND_BRAILLE, NULL);
 }
 
 type_init(register_types);

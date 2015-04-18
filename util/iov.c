@@ -253,7 +253,7 @@ unsigned iov_copy(struct iovec *dst_iov, unsigned int dst_iov_cnt,
 
 void qemu_iovec_init(QEMUIOVector *qiov, int alloc_hint)
 {
-    qiov->iov = g_malloc(alloc_hint * sizeof(struct iovec));
+    qiov->iov = g_new(struct iovec, alloc_hint);
     qiov->niov = 0;
     qiov->nalloc = alloc_hint;
     qiov->size = 0;
@@ -277,7 +277,7 @@ void qemu_iovec_add(QEMUIOVector *qiov, void *base, size_t len)
 
     if (qiov->niov == qiov->nalloc) {
         qiov->nalloc = 2 * qiov->nalloc + 1;
-        qiov->iov = g_realloc(qiov->iov, qiov->nalloc * sizeof(struct iovec));
+        qiov->iov = g_renew(struct iovec, qiov->iov, qiov->nalloc);
     }
     qiov->iov[qiov->niov].iov_base = base;
     qiov->iov[qiov->niov].iov_len = len;
@@ -295,15 +295,15 @@ void qemu_iovec_add(QEMUIOVector *qiov, void *base, size_t len)
  * of src".
  * Only vector pointers are processed, not the actual data buffers.
  */
-void qemu_iovec_concat_iov(QEMUIOVector *dst,
-                           struct iovec *src_iov, unsigned int src_cnt,
-                           size_t soffset, size_t sbytes)
+size_t qemu_iovec_concat_iov(QEMUIOVector *dst,
+                             struct iovec *src_iov, unsigned int src_cnt,
+                             size_t soffset, size_t sbytes)
 {
     int i;
     size_t done;
 
     if (!sbytes) {
-        return;
+        return 0;
     }
     assert(dst->nalloc != -1);
     for (i = 0, done = 0; done < sbytes && i < src_cnt; i++) {
@@ -317,6 +317,8 @@ void qemu_iovec_concat_iov(QEMUIOVector *dst,
         }
     }
     assert(soffset == 0); /* offset beyond end of src */
+
+    return done;
 }
 
 /*
@@ -333,6 +335,27 @@ void qemu_iovec_concat(QEMUIOVector *dst,
                        QEMUIOVector *src, size_t soffset, size_t sbytes)
 {
     qemu_iovec_concat_iov(dst, src->iov, src->niov, soffset, sbytes);
+}
+
+/*
+ * Check if the contents of the iovecs are all zero
+ */
+bool qemu_iovec_is_zero(QEMUIOVector *qiov)
+{
+    int i;
+    for (i = 0; i < qiov->niov; i++) {
+        size_t offs = QEMU_ALIGN_DOWN(qiov->iov[i].iov_len, 4 * sizeof(long));
+        uint8_t *ptr = qiov->iov[i].iov_base;
+        if (offs && !buffer_is_zero(qiov->iov[i].iov_base, offs)) {
+            return false;
+        }
+        for (; offs < qiov->iov[i].iov_len; offs++) {
+            if (ptr[offs]) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 void qemu_iovec_destroy(QEMUIOVector *qiov)
@@ -526,4 +549,17 @@ size_t iov_discard_back(struct iovec *iov, unsigned int *iov_cnt,
     }
 
     return total;
+}
+
+void qemu_iovec_discard_back(QEMUIOVector *qiov, size_t bytes)
+{
+    size_t total;
+    unsigned int niov = qiov->niov;
+
+    assert(qiov->size >= bytes);
+    total = iov_discard_back(qiov->iov, &niov, bytes);
+    assert(total == bytes);
+
+    qiov->niov = niov;
+    qiov->size -= bytes;
 }

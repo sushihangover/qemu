@@ -22,10 +22,13 @@
 #include "disas/disas.h"
 #include "tcg-op.h"
 #include "qemu/log.h"
+#include "exec/cpu_ldst.h"
 
-#include "helper.h"
-#define GEN_HELPER 1
-#include "helper.h"
+#include "exec/helper-proto.h"
+#include "exec/helper-gen.h"
+
+#include "trace-tcg.h"
+
 
 //#define DEBUG_DISPATCH 1
 
@@ -676,7 +679,7 @@ static TCGv gen_ea(CPUM68KState *env, DisasContext *s, uint16_t insn,
 }
 
 /* This generates a conditional branch, clobbering all temporaries.  */
-static void gen_jmpcc(DisasContext *s, int cond, int l1)
+static void gen_jmpcc(DisasContext *s, int cond, TCGLabel *l1)
 {
     TCGv tmp;
 
@@ -781,7 +784,7 @@ static void gen_jmpcc(DisasContext *s, int cond, int l1)
 
 DISAS_INSN(scc)
 {
-    int l1;
+    TCGLabel *l1;
     int cond;
     TCGv reg;
 
@@ -1655,7 +1658,7 @@ DISAS_INSN(branch)
     int32_t offset;
     uint32_t base;
     int op;
-    int l1;
+    TCGLabel *l1;
 
     base = s->pc;
     op = (insn >> 8) & 0xf;
@@ -2392,7 +2395,7 @@ DISAS_INSN(fbcc)
     uint32_t offset;
     uint32_t addr;
     TCGv flag;
-    int l1;
+    TCGLabel *l1;
 
     addr = s->pc;
     offset = cpu_ldsw_code(env, s->pc);
@@ -2977,7 +2980,6 @@ gen_intermediate_code_internal(M68kCPU *cpu, TranslationBlock *tb,
     CPUState *cs = CPU(cpu);
     CPUM68KState *env = &cpu->env;
     DisasContext dc1, *dc = &dc1;
-    uint16_t *gen_opc_end;
     CPUBreakpoint *bp;
     int j, lj;
     target_ulong pc_start;
@@ -2989,8 +2991,6 @@ gen_intermediate_code_internal(M68kCPU *cpu, TranslationBlock *tb,
     pc_start = tb->pc;
 
     dc->tb = tb;
-
-    gen_opc_end = tcg_ctx.gen_opc_buf + OPC_MAX_SIZE;
 
     dc->env = env;
     dc->is_jmp = DISAS_NEXT;
@@ -3007,7 +3007,7 @@ gen_intermediate_code_internal(M68kCPU *cpu, TranslationBlock *tb,
     if (max_insns == 0)
         max_insns = CF_COUNT_MASK;
 
-    gen_tb_start();
+    gen_tb_start(tb);
     do {
         pc_offset = dc->pc - pc_start;
         gen_throws_exception = NULL;
@@ -3023,7 +3023,7 @@ gen_intermediate_code_internal(M68kCPU *cpu, TranslationBlock *tb,
                 break;
         }
         if (search_pc) {
-            j = tcg_ctx.gen_opc_ptr - tcg_ctx.gen_opc_buf;
+            j = tcg_op_buf_count();
             if (lj < j) {
                 lj++;
                 while (lj < j)
@@ -3038,7 +3038,7 @@ gen_intermediate_code_internal(M68kCPU *cpu, TranslationBlock *tb,
         dc->insn_pc = dc->pc;
 	disas_m68k_insn(env, dc);
         num_insns++;
-    } while (!dc->is_jmp && tcg_ctx.gen_opc_ptr < gen_opc_end &&
+    } while (!dc->is_jmp && !tcg_op_buf_full() &&
              !cs->singlestep_enabled &&
              !singlestep &&
              (pc_offset) < (TARGET_PAGE_SIZE - 32) &&
@@ -3072,7 +3072,6 @@ gen_intermediate_code_internal(M68kCPU *cpu, TranslationBlock *tb,
         }
     }
     gen_tb_end(tb, num_insns);
-    *tcg_ctx.gen_opc_ptr = INDEX_op_end;
 
 #ifdef DEBUG_DISAS
     if (qemu_loglevel_mask(CPU_LOG_TB_IN_ASM)) {
@@ -3083,7 +3082,7 @@ gen_intermediate_code_internal(M68kCPU *cpu, TranslationBlock *tb,
     }
 #endif
     if (search_pc) {
-        j = tcg_ctx.gen_opc_ptr - tcg_ctx.gen_opc_buf;
+        j = tcg_op_buf_count();
         lj++;
         while (lj <= j)
             tcg_ctx.gen_opc_instr_start[lj++] = 0;

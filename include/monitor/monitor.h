@@ -19,67 +19,26 @@ extern Monitor *default_mon;
 /* flags for monitor commands */
 #define MONITOR_CMD_ASYNC       0x0001
 
-/* QMP events */
-typedef enum MonitorEvent {
-    QEVENT_SHUTDOWN,
-    QEVENT_RESET,
-    QEVENT_POWERDOWN,
-    QEVENT_STOP,
-    QEVENT_RESUME,
-    QEVENT_VNC_CONNECTED,
-    QEVENT_VNC_INITIALIZED,
-    QEVENT_VNC_DISCONNECTED,
-    QEVENT_BLOCK_IO_ERROR,
-    QEVENT_RTC_CHANGE,
-    QEVENT_WATCHDOG,
-    QEVENT_SPICE_CONNECTED,
-    QEVENT_SPICE_INITIALIZED,
-    QEVENT_SPICE_DISCONNECTED,
-    QEVENT_BLOCK_JOB_COMPLETED,
-    QEVENT_BLOCK_JOB_CANCELLED,
-    QEVENT_BLOCK_JOB_ERROR,
-    QEVENT_BLOCK_JOB_READY,
-    QEVENT_DEVICE_DELETED,
-    QEVENT_DEVICE_TRAY_MOVED,
-    QEVENT_NIC_RX_FILTER_CHANGED,
-    QEVENT_SUSPEND,
-    QEVENT_SUSPEND_DISK,
-    QEVENT_WAKEUP,
-    QEVENT_BALLOON_CHANGE,
-    QEVENT_SPICE_MIGRATE_COMPLETED,
-    QEVENT_GUEST_PANICKED,
-    QEVENT_BLOCK_IMAGE_CORRUPTED,
-    QEVENT_QUORUM_FAILURE,
-    QEVENT_QUORUM_REPORT_BAD,
-
-    /* Add to 'monitor_event_names' array in monitor.c when
-     * defining new events here */
-
-    QEVENT_MAX,
-} MonitorEvent;
-
 int monitor_cur_is_qmp(void);
 
-void monitor_protocol_event(MonitorEvent event, QObject *data);
 void monitor_init(CharDriverState *chr, int flags);
 
 int monitor_suspend(Monitor *mon);
 void monitor_resume(Monitor *mon);
 
 int monitor_read_bdrv_key_start(Monitor *mon, BlockDriverState *bs,
-                                BlockDriverCompletionFunc *completion_cb,
+                                BlockCompletionFunc *completion_cb,
                                 void *opaque);
 int monitor_read_block_device_key(Monitor *mon, const char *device,
-                                  BlockDriverCompletionFunc *completion_cb,
+                                  BlockCompletionFunc *completion_cb,
                                   void *opaque);
 
 int monitor_get_fd(Monitor *mon, const char *fdname, Error **errp);
-int monitor_handle_fd_param(Monitor *mon, const char *fdname);
+int monitor_fd_param(Monitor *mon, const char *fdname, Error **errp);
 
 void monitor_vprintf(Monitor *mon, const char *fmt, va_list ap)
     GCC_FMT_ATTR(2, 0);
 void monitor_printf(Monitor *mon, const char *fmt, ...) GCC_FMT_ATTR(2, 3);
-void monitor_print_filename(Monitor *mon, const char *filename);
 void monitor_flush(Monitor *mon);
 int monitor_set_cpu(int cpu_index);
 int monitor_get_cpu_index(void);
@@ -104,7 +63,7 @@ AddfdInfo *monitor_fdset_add_fd(int fd, bool has_fdset_id, int64_t fdset_id,
                                 Error **errp);
 int monitor_fdset_get_fd(int64_t fdset_id, int flags);
 int monitor_fdset_dup_fd_add(int64_t fdset_id, int dup_fd);
-int monitor_fdset_dup_fd_remove(int dup_fd);
+void monitor_fdset_dup_fd_remove(int dup_fd);
 int monitor_fdset_dup_fd_find(int dup_fd);
 
 #endif /* !MONITOR_H */

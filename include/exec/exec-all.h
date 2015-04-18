@@ -96,6 +96,8 @@ void tb_invalidate_phys_page_range(tb_page_addr_t start, tb_page_addr_t end,
 void tb_invalidate_phys_range(tb_page_addr_t start, tb_page_addr_t end,
                               int is_cpu_write_access);
 #if !defined(CONFIG_USER_ONLY)
+bool qemu_in_vcpu_thread(void);
+void cpu_reload_memory_map(CPUState *cpu);
 void tcg_cpu_address_space_init(CPUState *cpu, AddressSpace *as);
 /* cputlb.c */
 void tlb_flush_page(CPUState *cpu, target_ulong addr);
@@ -131,6 +133,7 @@ static inline void tlb_flush(CPUState *cpu, int flush_global)
 #if defined(__arm__) || defined(_ARCH_PPC) \
     || defined(__x86_64__) || defined(__i386__) \
     || defined(__sparc__) || defined(__aarch64__) \
+    || defined(__s390x__) || defined(__mips__) \
     || defined(CONFIG_TCG_INTERPRETER)
 #define USE_DIRECT_JUMP
 #endif
@@ -141,11 +144,14 @@ struct TranslationBlock {
     uint64_t flags; /* flags defining in which context the code was generated */
     uint16_t size;      /* size of target code for this block (1 <=
                            size <= TARGET_PAGE_SIZE) */
-    uint16_t cflags;    /* compile flags */
+    uint16_t icount;
+    uint32_t cflags;    /* compile flags */
 #define CF_COUNT_MASK  0x7fff
 #define CF_LAST_IO     0x8000 /* Last insn may be an IO access.  */
+#define CF_NOCACHE     0x10000 /* To be freed after execution */
+#define CF_USE_ICOUNT  0x20000
 
-    uint8_t *tc_ptr;    /* pointer to the translated code */
+    void *tc_ptr;    /* pointer to the translated code */
     /* next matching tb for physical address. */
     struct TranslationBlock *phys_hash_next;
     /* first and second physical page containing code. The lower bit
@@ -167,7 +173,6 @@ struct TranslationBlock {
        jmp_first */
     struct TranslationBlock *jmp_next[2];
     struct TranslationBlock *jmp_first;
-    uint32_t icount;
 };
 
 #include "exec/spinlock.h"
@@ -223,13 +228,21 @@ static inline void tb_set_jmp_target1(uintptr_t jmp_addr, uintptr_t addr)
     /* no need to flush icache explicitly */
 }
 #elif defined(_ARCH_PPC)
-void ppc_tb_set_jmp_target(unsigned long jmp_addr, unsigned long addr);
+void ppc_tb_set_jmp_target(uintptr_t jmp_addr, uintptr_t addr);
 #define tb_set_jmp_target1 ppc_tb_set_jmp_target
 #elif defined(__i386__) || defined(__x86_64__)
 static inline void tb_set_jmp_target1(uintptr_t jmp_addr, uintptr_t addr)
 {
     /* patch the branch destination */
-    *(uint32_t *)jmp_addr = addr - (jmp_addr + 4);
+    stl_le_p((void*)jmp_addr, addr - (jmp_addr + 4));
+    /* no need to flush icache explicitly */
+}
+#elif defined(__s390x__)
+static inline void tb_set_jmp_target1(uintptr_t jmp_addr, uintptr_t addr)
+{
+    /* patch the branch destination */
+    intptr_t disp = addr - (jmp_addr - 2);
+    stl_be_p((void*)jmp_addr, disp / 2);
     /* no need to flush icache explicitly */
 }
 #elif defined(__aarch64__)
@@ -259,7 +272,7 @@ static inline void tb_set_jmp_target1(uintptr_t jmp_addr, uintptr_t addr)
     __asm __volatile__ ("swi 0x9f0002" : : "r" (_beg), "r" (_end), "r" (_flg));
 #endif
 }
-#elif defined(__sparc__)
+#elif defined(__sparc__) || defined(__mips__)
 void tb_set_jmp_target1(uintptr_t jmp_addr, uintptr_t addr);
 #else
 #error tb_set_jmp_target1 is missing
@@ -324,9 +337,10 @@ extern uintptr_t tci_tb_ptr;
 
 #if !defined(CONFIG_USER_ONLY)
 
-void phys_mem_set_alloc(void *(*alloc)(size_t));
+void phys_mem_set_alloc(void *(*alloc)(size_t, uint64_t *align));
 
-struct MemoryRegion *iotlb_to_region(AddressSpace *as, hwaddr index);
+struct MemoryRegion *iotlb_to_region(CPUState *cpu,
+                                     hwaddr index);
 bool io_mem_read(struct MemoryRegion *mr, hwaddr addr,
                  uint64_t *pvalue, unsigned size);
 bool io_mem_write(struct MemoryRegion *mr, hwaddr addr,
@@ -334,29 +348,6 @@ bool io_mem_write(struct MemoryRegion *mr, hwaddr addr,
 
 void tlb_fill(CPUState *cpu, target_ulong addr, int is_write, int mmu_idx,
               uintptr_t retaddr);
-
-uint8_t helper_ldb_cmmu(CPUArchState *env, target_ulong addr, int mmu_idx);
-uint16_t helper_ldw_cmmu(CPUArchState *env, target_ulong addr, int mmu_idx);
-uint32_t helper_ldl_cmmu(CPUArchState *env, target_ulong addr, int mmu_idx);
-uint64_t helper_ldq_cmmu(CPUArchState *env, target_ulong addr, int mmu_idx);
-
-#define ACCESS_TYPE (NB_MMU_MODES + 1)
-#define MEMSUFFIX _code
-
-#define DATA_SIZE 1
-#include "exec/softmmu_header.h"
-
-#define DATA_SIZE 2
-#include "exec/softmmu_header.h"
-
-#define DATA_SIZE 4
-#include "exec/softmmu_header.h"
-
-#define DATA_SIZE 8
-#include "exec/softmmu_header.h"
-
-#undef ACCESS_TYPE
-#undef MEMSUFFIX
 
 #endif
 
@@ -369,10 +360,6 @@ static inline tb_page_addr_t get_page_addr_code(CPUArchState *env1, target_ulong
 /* cputlb.c */
 tb_page_addr_t get_page_addr_code(CPUArchState *env1, target_ulong addr);
 #endif
-
-typedef void (CPUDebugExcpHandler)(CPUArchState *env);
-
-void cpu_set_debug_excp_handler(CPUDebugExcpHandler *handler);
 
 /* vl.c */
 extern int singlestep;

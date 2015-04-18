@@ -18,28 +18,12 @@
  */
 #include "cpu.h"
 #include "qemu/host-utils.h"
-#include "helper.h"
+#include "exec/helper-proto.h"
+#include "qemu/aes.h"
 
 #include "helper_regs.h"
 /*****************************************************************************/
 /* Fixed point operations helpers */
-#if defined(TARGET_PPC64)
-
-uint64_t helper_mulldo(CPUPPCState *env, uint64_t arg1, uint64_t arg2)
-{
-    int64_t th;
-    uint64_t tl;
-
-    muls64(&tl, (uint64_t *)&th, arg1, arg2);
-    /* If th != 0 && th != -1, then we had an overflow */
-    if (likely((uint64_t)(th + 1) <= 1)) {
-        env->ov = 0;
-    } else {
-        env->so = env->ov = 1;
-    }
-    return (int64_t)tl;
-}
-#endif
 
 target_ulong helper_divweu(CPUPPCState *env, target_ulong ra, target_ulong rb,
                            uint32_t oe)
@@ -237,7 +221,7 @@ target_ulong helper_srad(CPUPPCState *env, target_ulong value,
         if (likely((uint64_t)shift != 0)) {
             shift &= 0x3f;
             ret = (int64_t)value >> shift;
-            if (likely(ret >= 0 || (value & ((1 << shift) - 1)) == 0)) {
+            if (likely(ret >= 0 || (value & ((1ULL << shift) - 1)) == 0)) {
                 env->ca = 0;
             } else {
                 env->ca = 1;
@@ -396,9 +380,13 @@ target_ulong helper_602_mfrom(target_ulong arg)
 #if defined(HOST_WORDS_BIGENDIAN)
 #define HI_IDX 0
 #define LO_IDX 1
+#define AVRB(i) u8[i]
+#define AVRW(i) u32[i]
 #else
 #define HI_IDX 1
 #define LO_IDX 0
+#define AVRB(i) u8[15-(i)]
+#define AVRW(i) u32[3-(i)]
 #endif
 
 #if defined(HOST_WORDS_BIGENDIAN)
@@ -720,7 +708,7 @@ static inline void vcmpbfp_internal(CPUPPCState *env, ppc_avr_t *r,
         int le_rel = float32_compare_quiet(a->f[i], b->f[i], &env->vec_status);
         if (le_rel == float_relation_unordered) {
             r->u32[i] = 0xc0000000;
-            /* ALL_IN does not need to be updated here.  */
+            all_in = 1;
         } else {
             float32 bneg = float32_chs(b->f[i]);
             int ge_rel = float32_compare_quiet(a->f[i], bneg, &env->vec_status);
@@ -1564,13 +1552,6 @@ void helper_vlogefp(CPUPPCState *env, ppc_avr_t *r, ppc_avr_t *b)
     }
 }
 
-#if defined(HOST_WORDS_BIGENDIAN)
-#define LEFT 0
-#define RIGHT 1
-#else
-#define LEFT 1
-#define RIGHT 0
-#endif
 /* The specification says that the results are undefined if all of the
  * shift counts are not identical.  We check to make sure that they are
  * to conform to what real hardware appears to do.  */
@@ -1600,11 +1581,9 @@ void helper_vlogefp(CPUPPCState *env, ppc_avr_t *r, ppc_avr_t *b)
             }                                                           \
         }                                                               \
     }
-VSHIFT(l, LEFT)
-VSHIFT(r, RIGHT)
+VSHIFT(l, 1)
+VSHIFT(r, 0)
 #undef VSHIFT
-#undef LEFT
-#undef RIGHT
 
 #define VSL(suffix, element, mask)                                      \
     void helper_vsl##suffix(ppc_avr_t *r, ppc_avr_t *a, ppc_avr_t *b)   \
@@ -2298,25 +2277,25 @@ uint32_t helper_bcdadd(ppc_avr_t *r,  ppc_avr_t *a, ppc_avr_t *b, uint32_t ps)
         if (sgna == sgnb) {
             result.u8[BCD_DIG_BYTE(0)] = bcd_preferred_sgn(sgna, ps);
             zero = bcd_add_mag(&result, a, b, &invalid, &overflow);
-            cr = (sgna > 0) ? 4 : 8;
+            cr = (sgna > 0) ? 1 << CRF_GT : 1 << CRF_LT;
         } else if (bcd_cmp_mag(a, b) > 0) {
             result.u8[BCD_DIG_BYTE(0)] = bcd_preferred_sgn(sgna, ps);
             zero = bcd_sub_mag(&result, a, b, &invalid, &overflow);
-            cr = (sgna > 0) ? 4 : 8;
+            cr = (sgna > 0) ? 1 << CRF_GT : 1 << CRF_LT;
         } else {
             result.u8[BCD_DIG_BYTE(0)] = bcd_preferred_sgn(sgnb, ps);
             zero = bcd_sub_mag(&result, b, a, &invalid, &overflow);
-            cr = (sgnb > 0) ? 4 : 8;
+            cr = (sgnb > 0) ? 1 << CRF_GT : 1 << CRF_LT;
         }
     }
 
     if (unlikely(invalid)) {
         result.u64[HI_IDX] = result.u64[LO_IDX] = -1;
-        cr = 1;
+        cr = 1 << CRF_SO;
     } else if (overflow) {
-        cr |= 1;
+        cr |= 1 << CRF_SO;
     } else if (zero) {
-        cr = 2;
+        cr = 1 << CRF_EQ;
     }
 
     *r = result;
@@ -2338,284 +2317,63 @@ uint32_t helper_bcdsub(ppc_avr_t *r,  ppc_avr_t *a, ppc_avr_t *b, uint32_t ps)
     return helper_bcdadd(r, a, &bcopy, ps);
 }
 
-static uint8_t SBOX[256] = {
-0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5,
-0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB, 0x76,
-0xCA, 0x82, 0xC9, 0x7D, 0xFA, 0x59, 0x47, 0xF0,
-0xAD, 0xD4, 0xA2, 0xAF, 0x9C, 0xA4, 0x72, 0xC0,
-0xB7, 0xFD, 0x93, 0x26, 0x36, 0x3F, 0xF7, 0xCC,
-0x34, 0xA5, 0xE5, 0xF1, 0x71, 0xD8, 0x31, 0x15,
-0x04, 0xC7, 0x23, 0xC3, 0x18, 0x96, 0x05, 0x9A,
-0x07, 0x12, 0x80, 0xE2, 0xEB, 0x27, 0xB2, 0x75,
-0x09, 0x83, 0x2C, 0x1A, 0x1B, 0x6E, 0x5A, 0xA0,
-0x52, 0x3B, 0xD6, 0xB3, 0x29, 0xE3, 0x2F, 0x84,
-0x53, 0xD1, 0x00, 0xED, 0x20, 0xFC, 0xB1, 0x5B,
-0x6A, 0xCB, 0xBE, 0x39, 0x4A, 0x4C, 0x58, 0xCF,
-0xD0, 0xEF, 0xAA, 0xFB, 0x43, 0x4D, 0x33, 0x85,
-0x45, 0xF9, 0x02, 0x7F, 0x50, 0x3C, 0x9F, 0xA8,
-0x51, 0xA3, 0x40, 0x8F, 0x92, 0x9D, 0x38, 0xF5,
-0xBC, 0xB6, 0xDA, 0x21, 0x10, 0xFF, 0xF3, 0xD2,
-0xCD, 0x0C, 0x13, 0xEC, 0x5F, 0x97, 0x44, 0x17,
-0xC4, 0xA7, 0x7E, 0x3D, 0x64, 0x5D, 0x19, 0x73,
-0x60, 0x81, 0x4F, 0xDC, 0x22, 0x2A, 0x90, 0x88,
-0x46, 0xEE, 0xB8, 0x14, 0xDE, 0x5E, 0x0B, 0xDB,
-0xE0, 0x32, 0x3A, 0x0A, 0x49, 0x06, 0x24, 0x5C,
-0xC2, 0xD3, 0xAC, 0x62, 0x91, 0x95, 0xE4, 0x79,
-0xE7, 0xC8, 0x37, 0x6D, 0x8D, 0xD5, 0x4E, 0xA9,
-0x6C, 0x56, 0xF4, 0xEA, 0x65, 0x7A, 0xAE, 0x08,
-0xBA, 0x78, 0x25, 0x2E, 0x1C, 0xA6, 0xB4, 0xC6,
-0xE8, 0xDD, 0x74, 0x1F, 0x4B, 0xBD, 0x8B, 0x8A,
-0x70, 0x3E, 0xB5, 0x66, 0x48, 0x03, 0xF6, 0x0E,
-0x61, 0x35, 0x57, 0xB9, 0x86, 0xC1, 0x1D, 0x9E,
-0xE1, 0xF8, 0x98, 0x11, 0x69, 0xD9, 0x8E, 0x94,
-0x9B, 0x1E, 0x87, 0xE9, 0xCE, 0x55, 0x28, 0xDF,
-0x8C, 0xA1, 0x89, 0x0D, 0xBF, 0xE6, 0x42, 0x68,
-0x41, 0x99, 0x2D, 0x0F, 0xB0, 0x54, 0xBB, 0x16,
-};
-
-static void SubBytes(ppc_avr_t *r, ppc_avr_t *a)
-{
-    int i;
-    VECTOR_FOR_INORDER_I(i, u8) {
-        r->u8[i] = SBOX[a->u8[i]];
-    }
-}
-
-static uint8_t InvSBOX[256] = {
-0x52, 0x09, 0x6A, 0xD5, 0x30, 0x36, 0xA5, 0x38,
-0xBF, 0x40, 0xA3, 0x9E, 0x81, 0xF3, 0xD7, 0xFB,
-0x7C, 0xE3, 0x39, 0x82, 0x9B, 0x2F, 0xFF, 0x87,
-0x34, 0x8E, 0x43, 0x44, 0xC4, 0xDE, 0xE9, 0xCB,
-0x54, 0x7B, 0x94, 0x32, 0xA6, 0xC2, 0x23, 0x3D,
-0xEE, 0x4C, 0x95, 0x0B, 0x42, 0xFA, 0xC3, 0x4E,
-0x08, 0x2E, 0xA1, 0x66, 0x28, 0xD9, 0x24, 0xB2,
-0x76, 0x5B, 0xA2, 0x49, 0x6D, 0x8B, 0xD1, 0x25,
-0x72, 0xF8, 0xF6, 0x64, 0x86, 0x68, 0x98, 0x16,
-0xD4, 0xA4, 0x5C, 0xCC, 0x5D, 0x65, 0xB6, 0x92,
-0x6C, 0x70, 0x48, 0x50, 0xFD, 0xED, 0xB9, 0xDA,
-0x5E, 0x15, 0x46, 0x57, 0xA7, 0x8D, 0x9D, 0x84,
-0x90, 0xD8, 0xAB, 0x00, 0x8C, 0xBC, 0xD3, 0x0A,
-0xF7, 0xE4, 0x58, 0x05, 0xB8, 0xB3, 0x45, 0x06,
-0xD0, 0x2C, 0x1E, 0x8F, 0xCA, 0x3F, 0x0F, 0x02,
-0xC1, 0xAF, 0xBD, 0x03, 0x01, 0x13, 0x8A, 0x6B,
-0x3A, 0x91, 0x11, 0x41, 0x4F, 0x67, 0xDC, 0xEA,
-0x97, 0xF2, 0xCF, 0xCE, 0xF0, 0xB4, 0xE6, 0x73,
-0x96, 0xAC, 0x74, 0x22, 0xE7, 0xAD, 0x35, 0x85,
-0xE2, 0xF9, 0x37, 0xE8, 0x1C, 0x75, 0xDF, 0x6E,
-0x47, 0xF1, 0x1A, 0x71, 0x1D, 0x29, 0xC5, 0x89,
-0x6F, 0xB7, 0x62, 0x0E, 0xAA, 0x18, 0xBE, 0x1B,
-0xFC, 0x56, 0x3E, 0x4B, 0xC6, 0xD2, 0x79, 0x20,
-0x9A, 0xDB, 0xC0, 0xFE, 0x78, 0xCD, 0x5A, 0xF4,
-0x1F, 0xDD, 0xA8, 0x33, 0x88, 0x07, 0xC7, 0x31,
-0xB1, 0x12, 0x10, 0x59, 0x27, 0x80, 0xEC, 0x5F,
-0x60, 0x51, 0x7F, 0xA9, 0x19, 0xB5, 0x4A, 0x0D,
-0x2D, 0xE5, 0x7A, 0x9F, 0x93, 0xC9, 0x9C, 0xEF,
-0xA0, 0xE0, 0x3B, 0x4D, 0xAE, 0x2A, 0xF5, 0xB0,
-0xC8, 0xEB, 0xBB, 0x3C, 0x83, 0x53, 0x99, 0x61,
-0x17, 0x2B, 0x04, 0x7E, 0xBA, 0x77, 0xD6, 0x26,
-0xE1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0C, 0x7D,
-};
-
-static void InvSubBytes(ppc_avr_t *r, ppc_avr_t *a)
-{
-    int i;
-    VECTOR_FOR_INORDER_I(i, u8) {
-        r->u8[i] = InvSBOX[a->u8[i]];
-    }
-}
-
-static uint8_t ROTL8(uint8_t x, int n)
-{
-    return (x << n) | (x >> (8-n));
-}
-
-static inline int BIT8(uint8_t x, int n)
-{
-    return (x & (0x80 >> n)) != 0;
-}
-
-static uint8_t GFx02(uint8_t x)
-{
-    return ROTL8(x, 1) ^ (BIT8(x, 0) ? 0x1A : 0);
-}
-
-static uint8_t GFx03(uint8_t x)
-{
-    return x ^ ROTL8(x, 1) ^ (BIT8(x, 0) ? 0x1A : 0);
-}
-
-static uint8_t GFx09(uint8_t x)
-{
-    uint8_t term2 = ROTL8(x, 3);
-    uint8_t term3 = (BIT8(x, 0) ? 0x68 : 0) | (BIT8(x, 1) ? 0x14 : 0) |
-                    (BIT8(x, 2) ? 0x02 : 0);
-    uint8_t term4 = (BIT8(x, 1) ? 0x20 : 0) | (BIT8(x, 2) ? 0x18 : 0);
-    return x ^ term2 ^ term3 ^ term4;
-}
-
-static uint8_t GFx0B(uint8_t x)
-{
-    uint8_t term2 = ROTL8(x, 1);
-    uint8_t term3 = (x << 3) | (BIT8(x, 0) ? 0x06 : 0) |
-                    (BIT8(x, 2) ? 0x01 : 0);
-    uint8_t term4 = (BIT8(x, 0) ? 0x70 : 0) | (BIT8(x, 1) ? 0x06 : 0) |
-                    (BIT8(x, 2) ? 0x08 : 0);
-    uint8_t term5 = (BIT8(x, 1) ? 0x30 : 0) | (BIT8(x, 2) ? 0x02 : 0);
-    uint8_t term6 = BIT8(x, 2) ? 0x10 : 0;
-    return x ^ term2 ^ term3 ^ term4 ^ term5 ^ term6;
-}
-
-static uint8_t GFx0D(uint8_t x)
-{
-    uint8_t term2 = ROTL8(x, 2);
-    uint8_t term3 = (x << 3) | (BIT8(x, 1) ? 0x04 : 0) |
-                    (BIT8(x, 2) ? 0x03 : 0);
-    uint8_t term4 = (BIT8(x, 0) ? 0x58 : 0) | (BIT8(x, 1) ? 0x20 : 0);
-    uint8_t term5 = (BIT8(x, 1) ? 0x08 : 0) | (BIT8(x, 2) ? 0x10 : 0);
-    uint8_t term6 = BIT8(x, 2) ? 0x08 : 0;
-    return x ^ term2 ^ term3 ^ term4 ^ term5 ^ term6;
-}
-
-static uint8_t GFx0E(uint8_t x)
-{
-    uint8_t term1 = ROTL8(x, 1);
-    uint8_t term2 = (x << 2) | (BIT8(x, 2) ? 0x02 : 0) |
-                    (BIT8(x, 1) ? 0x01 : 0);
-    uint8_t term3 = (x << 3) | (BIT8(x, 1) ? 0x04 : 0) |
-                    (BIT8(x, 2) ? 0x01 : 0);
-    uint8_t term4 = (BIT8(x, 0) ? 0x40 : 0) | (BIT8(x, 1) ? 0x28 : 0) |
-                    (BIT8(x, 2) ? 0x10 : 0);
-    uint8_t term5 = (BIT8(x, 2) ? 0x08 : 0);
-    return term1 ^ term2 ^ term3 ^ term4 ^ term5;
-}
-
-#if defined(HOST_WORDS_BIGENDIAN)
-#define MCB(x, i, b) ((x)->u8[(i)*4 + (b)])
-#else
-#define MCB(x, i, b) ((x)->u8[15 - ((i)*4 + (b))])
-#endif
-
-static void MixColumns(ppc_avr_t *r, ppc_avr_t *x)
-{
-    int i;
-    for (i = 0; i < 4; i++) {
-        MCB(r, i, 0) = GFx02(MCB(x, i, 0)) ^ GFx03(MCB(x, i, 1)) ^
-                       MCB(x, i, 2) ^ MCB(x, i, 3);
-        MCB(r, i, 1) = MCB(x, i, 0) ^ GFx02(MCB(x, i, 1)) ^
-                       GFx03(MCB(x, i, 2)) ^ MCB(x, i, 3);
-        MCB(r, i, 2) = MCB(x, i, 0) ^ MCB(x, i, 1) ^
-                       GFx02(MCB(x, i, 2)) ^ GFx03(MCB(x, i, 3));
-        MCB(r, i, 3) = GFx03(MCB(x, i, 0)) ^ MCB(x, i, 1) ^
-                       MCB(x, i, 2) ^ GFx02(MCB(x, i, 3));
-    }
-}
-
-static void InvMixColumns(ppc_avr_t *r, ppc_avr_t *x)
-{
-    int i;
-    for (i = 0; i < 4; i++) {
-        MCB(r, i, 0) = GFx0E(MCB(x, i, 0)) ^ GFx0B(MCB(x, i, 1)) ^
-                       GFx0D(MCB(x, i, 2)) ^ GFx09(MCB(x, i, 3));
-        MCB(r, i, 1) = GFx09(MCB(x, i, 0)) ^ GFx0E(MCB(x, i, 1)) ^
-                       GFx0B(MCB(x, i, 2)) ^ GFx0D(MCB(x, i, 3));
-        MCB(r, i, 2) = GFx0D(MCB(x, i, 0)) ^ GFx09(MCB(x, i, 1)) ^
-                       GFx0E(MCB(x, i, 2)) ^ GFx0B(MCB(x, i, 3));
-        MCB(r, i, 3) = GFx0B(MCB(x, i, 0)) ^ GFx0D(MCB(x, i, 1)) ^
-                       GFx09(MCB(x, i, 2)) ^ GFx0E(MCB(x, i, 3));
-    }
-}
-
-static void ShiftRows(ppc_avr_t *r, ppc_avr_t *x)
-{
-    MCB(r, 0, 0) = MCB(x, 0, 0);
-    MCB(r, 1, 0) = MCB(x, 1, 0);
-    MCB(r, 2, 0) = MCB(x, 2, 0);
-    MCB(r, 3, 0) = MCB(x, 3, 0);
-
-    MCB(r, 0, 1) = MCB(x, 1, 1);
-    MCB(r, 1, 1) = MCB(x, 2, 1);
-    MCB(r, 2, 1) = MCB(x, 3, 1);
-    MCB(r, 3, 1) = MCB(x, 0, 1);
-
-    MCB(r, 0, 2) = MCB(x, 2, 2);
-    MCB(r, 1, 2) = MCB(x, 3, 2);
-    MCB(r, 2, 2) = MCB(x, 0, 2);
-    MCB(r, 3, 2) = MCB(x, 1, 2);
-
-    MCB(r, 0, 3) = MCB(x, 3, 3);
-    MCB(r, 1, 3) = MCB(x, 0, 3);
-    MCB(r, 2, 3) = MCB(x, 1, 3);
-    MCB(r, 3, 3) = MCB(x, 2, 3);
-}
-
-static void InvShiftRows(ppc_avr_t *r, ppc_avr_t *x)
-{
-    MCB(r, 0, 0) = MCB(x, 0, 0);
-    MCB(r, 1, 0) = MCB(x, 1, 0);
-    MCB(r, 2, 0) = MCB(x, 2, 0);
-    MCB(r, 3, 0) = MCB(x, 3, 0);
-
-    MCB(r, 0, 1) = MCB(x, 3, 1);
-    MCB(r, 1, 1) = MCB(x, 0, 1);
-    MCB(r, 2, 1) = MCB(x, 1, 1);
-    MCB(r, 3, 1) = MCB(x, 2, 1);
-
-    MCB(r, 0, 2) = MCB(x, 2, 2);
-    MCB(r, 1, 2) = MCB(x, 3, 2);
-    MCB(r, 2, 2) = MCB(x, 0, 2);
-    MCB(r, 3, 2) = MCB(x, 1, 2);
-
-    MCB(r, 0, 3) = MCB(x, 1, 3);
-    MCB(r, 1, 3) = MCB(x, 2, 3);
-    MCB(r, 2, 3) = MCB(x, 3, 3);
-    MCB(r, 3, 3) = MCB(x, 0, 3);
-}
-
-#undef MCB
-
 void helper_vsbox(ppc_avr_t *r, ppc_avr_t *a)
 {
-    SubBytes(r, a);
+    int i;
+    VECTOR_FOR_INORDER_I(i, u8) {
+        r->u8[i] = AES_sbox[a->u8[i]];
+    }
 }
 
 void helper_vcipher(ppc_avr_t *r, ppc_avr_t *a, ppc_avr_t *b)
 {
-    ppc_avr_t vtemp1, vtemp2, vtemp3;
-    SubBytes(&vtemp1, a);
-    ShiftRows(&vtemp2, &vtemp1);
-    MixColumns(&vtemp3, &vtemp2);
-    r->u64[0] = vtemp3.u64[0] ^ b->u64[0];
-    r->u64[1] = vtemp3.u64[1] ^ b->u64[1];
+    int i;
+
+    VECTOR_FOR_INORDER_I(i, u32) {
+        r->AVRW(i) = b->AVRW(i) ^
+            (AES_Te0[a->AVRB(AES_shifts[4*i + 0])] ^
+             AES_Te1[a->AVRB(AES_shifts[4*i + 1])] ^
+             AES_Te2[a->AVRB(AES_shifts[4*i + 2])] ^
+             AES_Te3[a->AVRB(AES_shifts[4*i + 3])]);
+    }
 }
 
 void helper_vcipherlast(ppc_avr_t *r, ppc_avr_t *a, ppc_avr_t *b)
 {
-    ppc_avr_t vtemp1, vtemp2;
-    SubBytes(&vtemp1, a);
-    ShiftRows(&vtemp2, &vtemp1);
-    r->u64[0] = vtemp2.u64[0] ^ b->u64[0];
-    r->u64[1] = vtemp2.u64[1] ^ b->u64[1];
+    int i;
+
+    VECTOR_FOR_INORDER_I(i, u8) {
+        r->AVRB(i) = b->AVRB(i) ^ (AES_sbox[a->AVRB(AES_shifts[i])]);
+    }
 }
 
 void helper_vncipher(ppc_avr_t *r, ppc_avr_t *a, ppc_avr_t *b)
 {
     /* This differs from what is written in ISA V2.07.  The RTL is */
     /* incorrect and will be fixed in V2.07B.                      */
-    ppc_avr_t vtemp1, vtemp2, vtemp3;
-    InvShiftRows(&vtemp1, a);
-    InvSubBytes(&vtemp2, &vtemp1);
-    vtemp3.u64[0] = vtemp2.u64[0] ^ b->u64[0];
-    vtemp3.u64[1] = vtemp2.u64[1] ^ b->u64[1];
-    InvMixColumns(r, &vtemp3);
+    int i;
+    ppc_avr_t tmp;
+
+    VECTOR_FOR_INORDER_I(i, u8) {
+        tmp.AVRB(i) = b->AVRB(i) ^ AES_isbox[a->AVRB(AES_ishifts[i])];
+    }
+
+    VECTOR_FOR_INORDER_I(i, u32) {
+        r->AVRW(i) =
+            AES_imc[tmp.AVRB(4*i + 0)][0] ^
+            AES_imc[tmp.AVRB(4*i + 1)][1] ^
+            AES_imc[tmp.AVRB(4*i + 2)][2] ^
+            AES_imc[tmp.AVRB(4*i + 3)][3];
+    }
 }
 
 void helper_vncipherlast(ppc_avr_t *r, ppc_avr_t *a, ppc_avr_t *b)
 {
-    ppc_avr_t vtemp1, vtemp2;
-    InvShiftRows(&vtemp1, a);
-    InvSubBytes(&vtemp2, &vtemp1);
-    r->u64[0] = vtemp2.u64[0] ^ b->u64[0];
-    r->u64[1] = vtemp2.u64[1] ^ b->u64[1];
+    int i;
+
+    VECTOR_FOR_INORDER_I(i, u8) {
+        r->AVRB(i) = b->AVRB(i) ^ (AES_isbox[a->AVRB(AES_ishifts[i])]);
+    }
 }
 
 #define ROTRu32(v, n) (((v) >> (n)) | ((v) << (32-n)))
@@ -2789,6 +2547,7 @@ target_ulong helper_dlmzb(CPUPPCState *env, target_ulong high,
         }
         i++;
     }
+    i = 8;
     if (update_Rc) {
         env->crf[0] = 0x2;
     }

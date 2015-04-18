@@ -14,6 +14,7 @@
 #include "hw/i2c/i2c.h"
 #include "hw/ssi.h"
 #include "sysemu/char.h"
+#include "sysemu/block-backend.h"
 #include "sysemu/blockdev.h"
 
 static struct {
@@ -148,8 +149,7 @@ static const VMStateDescription vmstate_pxa2xx_pm = {
     .name = "pxa2xx_pm",
     .version_id = 0,
     .minimum_version_id = 0,
-    .minimum_version_id_old = 0,
-    .fields      = (VMStateField[]) {
+    .fields = (VMStateField[]) {
         VMSTATE_UINT32_ARRAY(pm_regs, PXA2xxState, 0x40),
         VMSTATE_END_OF_LIST()
     }
@@ -215,8 +215,7 @@ static const VMStateDescription vmstate_pxa2xx_cm = {
     .name = "pxa2xx_cm",
     .version_id = 0,
     .minimum_version_id = 0,
-    .minimum_version_id_old = 0,
-    .fields      = (VMStateField[]) {
+    .fields = (VMStateField[]) {
         VMSTATE_UINT32_ARRAY(cm_regs, PXA2xxState, 4),
         VMSTATE_UINT32(clkcfg, PXA2xxState),
         VMSTATE_UINT32(pmnc, PXA2xxState),
@@ -274,10 +273,10 @@ static void pxa2xx_pwrmode_write(CPUARMState *env, const ARMCPRegInfo *ri,
     case 3:
         s->cpu->env.uncached_cpsr = ARM_CPU_MODE_SVC;
         s->cpu->env.daif = PSTATE_A | PSTATE_F | PSTATE_I;
-        s->cpu->env.cp15.c1_sys = 0;
+        s->cpu->env.cp15.sctlr_ns = 0;
         s->cpu->env.cp15.c1_coproc = 0;
-        s->cpu->env.cp15.ttbr0_el1 = 0;
-        s->cpu->env.cp15.c3 = 0;
+        s->cpu->env.cp15.ttbr0_el[1] = 0;
+        s->cpu->env.cp15.dacr_ns = 0;
         s->pm_regs[PSSR >> 2] |= 0x8; /* Set STS */
         s->pm_regs[RCSR >> 2] |= 0x8; /* Set GPR */
 
@@ -440,8 +439,7 @@ static const VMStateDescription vmstate_pxa2xx_mm = {
     .name = "pxa2xx_mm",
     .version_id = 0,
     .minimum_version_id = 0,
-    .minimum_version_id_old = 0,
-    .fields      = (VMStateField[]) {
+    .fields = (VMStateField[]) {
         VMSTATE_UINT32_ARRAY(mm_regs, PXA2xxState, 0x1a),
         VMSTATE_END_OF_LIST()
     }
@@ -732,7 +730,7 @@ static void pxa2xx_ssp_save(QEMUFile *f, void *opaque)
 static int pxa2xx_ssp_load(QEMUFile *f, void *opaque, int version_id)
 {
     PXA2xxSSPState *s = (PXA2xxSSPState *) opaque;
-    int i;
+    int i, v;
 
     s->enable = qemu_get_be32(f);
 
@@ -746,7 +744,11 @@ static int pxa2xx_ssp_load(QEMUFile *f, void *opaque, int version_id)
     qemu_get_8s(f, &s->ssrsa);
     qemu_get_8s(f, &s->ssacd);
 
-    s->rx_level = qemu_get_byte(f);
+    v = qemu_get_byte(f);
+    if (v < 0 || v > ARRAY_SIZE(s->rx_fifo)) {
+        return -EINVAL;
+    }
+    s->rx_level = v;
     s->rx_start = 0;
     for (i = 0; i < s->rx_level; i ++)
         s->rx_fifo[i] = qemu_get_byte(f);
@@ -1168,7 +1170,6 @@ static const VMStateDescription vmstate_pxa2xx_rtc_regs = {
     .name = "pxa2xx_rtc",
     .version_id = 0,
     .minimum_version_id = 0,
-    .minimum_version_id_old = 0,
     .pre_save = pxa2xx_rtc_pre_save,
     .post_load = pxa2xx_rtc_post_load,
     .fields = (VMStateField[]) {
@@ -1432,8 +1433,7 @@ static const VMStateDescription vmstate_pxa2xx_i2c_slave = {
     .name = "pxa2xx_i2c_slave",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
-    .fields      = (VMStateField []) {
+    .fields = (VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, PXA2xxI2CSlaveState),
         VMSTATE_END_OF_LIST()
     }
@@ -1443,8 +1443,7 @@ static const VMStateDescription vmstate_pxa2xx_i2c = {
     .name = "pxa2xx_i2c",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
-    .fields      = (VMStateField []) {
+    .fields = (VMStateField[]) {
         VMSTATE_UINT16(control, PXA2xxI2CState),
         VMSTATE_UINT16(status, PXA2xxI2CState),
         VMSTATE_UINT8(ibmr, PXA2xxI2CState),
@@ -1701,8 +1700,7 @@ static const VMStateDescription vmstate_pxa2xx_i2s = {
     .name = "pxa2xx_i2s",
     .version_id = 0,
     .minimum_version_id = 0,
-    .minimum_version_id_old = 0,
-    .fields      = (VMStateField[]) {
+    .fields = (VMStateField[]) {
         VMSTATE_UINT32_ARRAY(control, PXA2xxI2SState, 2),
         VMSTATE_UINT32(status, PXA2xxI2SState),
         VMSTATE_UINT32(mask, PXA2xxI2SState),
@@ -2055,13 +2053,15 @@ PXA2xxState *pxa270_init(MemoryRegion *address_space,
         fprintf(stderr, "Unable to find CPU definition\n");
         exit(1);
     }
-    s->reset = qemu_allocate_irqs(pxa2xx_reset, s, 1)[0];
+    s->reset = qemu_allocate_irq(pxa2xx_reset, s, 0);
 
     /* SDRAM & Internal Memory Storage */
-    memory_region_init_ram(&s->sdram, NULL, "pxa270.sdram", sdram_size);
+    memory_region_init_ram(&s->sdram, NULL, "pxa270.sdram", sdram_size,
+                           &error_abort);
     vmstate_register_ram_global(&s->sdram);
     memory_region_add_subregion(address_space, PXA2XX_SDRAM_BASE, &s->sdram);
-    memory_region_init_ram(&s->internal, NULL, "pxa270.internal", 0x40000);
+    memory_region_init_ram(&s->internal, NULL, "pxa270.internal", 0x40000,
+                           &error_abort);
     vmstate_register_ram_global(&s->internal);
     memory_region_add_subregion(address_space, PXA2XX_INTERNAL_BASE,
                                 &s->internal);
@@ -2086,7 +2086,8 @@ PXA2xxState *pxa270_init(MemoryRegion *address_space,
         fprintf(stderr, "qemu: missing SecureDigital device\n");
         exit(1);
     }
-    s->mmc = pxa2xx_mmci_init(address_space, 0x41100000, dinfo->bdrv,
+    s->mmc = pxa2xx_mmci_init(address_space, 0x41100000,
+                    blk_by_legacy_dinfo(dinfo),
                     qdev_get_gpio_in(s->pic, PXA2XX_PIC_MMC),
                     qdev_get_gpio_in(s->dma, PXA2XX_RX_RQ_MMCI),
                     qdev_get_gpio_in(s->dma, PXA2XX_TX_RQ_MMCI));
@@ -2142,7 +2143,7 @@ PXA2xxState *pxa270_init(MemoryRegion *address_space,
         s->ssp[i] = (SSIBus *)qdev_get_child_bus(dev, "ssi");
     }
 
-    if (usb_enabled(false)) {
+    if (usb_enabled()) {
         sysbus_create_simple("sysbus-ohci", 0x4c000000,
                         qdev_get_gpio_in(s->pic, PXA2XX_PIC_USBH1));
     }
@@ -2186,14 +2187,15 @@ PXA2xxState *pxa255_init(MemoryRegion *address_space, unsigned int sdram_size)
         fprintf(stderr, "Unable to find CPU definition\n");
         exit(1);
     }
-    s->reset = qemu_allocate_irqs(pxa2xx_reset, s, 1)[0];
+    s->reset = qemu_allocate_irq(pxa2xx_reset, s, 0);
 
     /* SDRAM & Internal Memory Storage */
-    memory_region_init_ram(&s->sdram, NULL, "pxa255.sdram", sdram_size);
+    memory_region_init_ram(&s->sdram, NULL, "pxa255.sdram", sdram_size,
+                           &error_abort);
     vmstate_register_ram_global(&s->sdram);
     memory_region_add_subregion(address_space, PXA2XX_SDRAM_BASE, &s->sdram);
     memory_region_init_ram(&s->internal, NULL, "pxa255.internal",
-                           PXA2XX_INTERNAL_SIZE);
+                           PXA2XX_INTERNAL_SIZE, &error_abort);
     vmstate_register_ram_global(&s->internal);
     memory_region_add_subregion(address_space, PXA2XX_INTERNAL_BASE,
                                 &s->internal);
@@ -2217,7 +2219,8 @@ PXA2xxState *pxa255_init(MemoryRegion *address_space, unsigned int sdram_size)
         fprintf(stderr, "qemu: missing SecureDigital device\n");
         exit(1);
     }
-    s->mmc = pxa2xx_mmci_init(address_space, 0x41100000, dinfo->bdrv,
+    s->mmc = pxa2xx_mmci_init(address_space, 0x41100000,
+                    blk_by_legacy_dinfo(dinfo),
                     qdev_get_gpio_in(s->pic, PXA2XX_PIC_MMC),
                     qdev_get_gpio_in(s->dma, PXA2XX_RX_RQ_MMCI),
                     qdev_get_gpio_in(s->dma, PXA2XX_TX_RQ_MMCI));
@@ -2273,7 +2276,7 @@ PXA2xxState *pxa255_init(MemoryRegion *address_space, unsigned int sdram_size)
         s->ssp[i] = (SSIBus *)qdev_get_child_bus(dev, "ssi");
     }
 
-    if (usb_enabled(false)) {
+    if (usb_enabled()) {
         sysbus_create_simple("sysbus-ohci", 0x4c000000,
                         qdev_get_gpio_in(s->pic, PXA2XX_PIC_USBH1));
     }

@@ -33,6 +33,9 @@
     do { } while (0)
 #endif
 
+/* the page in cache will not be replaced in two cycles */
+#define CACHED_PAGE_LIFETIME 2
+
 typedef struct CacheItem CacheItem;
 
 struct CacheItem {
@@ -109,6 +112,7 @@ void cache_fini(PageCache *cache)
 
     g_free(cache->page_cache);
     cache->page_cache = NULL;
+    g_free(cache);
 }
 
 static size_t cache_get_cache_pos(const PageCache *cache,
@@ -119,18 +123,6 @@ static size_t cache_get_cache_pos(const PageCache *cache,
     g_assert(cache->max_num_items);
     pos = (address / cache->page_size) & (cache->max_num_items - 1);
     return pos;
-}
-
-bool cache_is_cached(const PageCache *cache, uint64_t addr)
-{
-    size_t pos;
-
-    g_assert(cache);
-    g_assert(cache->page_cache);
-
-    pos = cache_get_cache_pos(cache, addr);
-
-    return (cache->page_cache[pos].it_addr == addr);
 }
 
 static CacheItem *cache_get_by_addr(const PageCache *cache, uint64_t addr)
@@ -150,17 +142,35 @@ uint8_t *get_cached_data(const PageCache *cache, uint64_t addr)
     return cache_get_by_addr(cache, addr)->it_data;
 }
 
-int cache_insert(PageCache *cache, uint64_t addr, const uint8_t *pdata)
+bool cache_is_cached(const PageCache *cache, uint64_t addr,
+                     uint64_t current_age)
+{
+    CacheItem *it;
+
+    it = cache_get_by_addr(cache, addr);
+
+    if (it->it_addr == addr) {
+        /* update the it_age when the cache hit */
+        it->it_age = current_age;
+        return true;
+    }
+    return false;
+}
+
+int cache_insert(PageCache *cache, uint64_t addr, const uint8_t *pdata,
+                 uint64_t current_age)
 {
 
-    CacheItem *it = NULL;
-
-    g_assert(cache);
-    g_assert(cache->page_cache);
+    CacheItem *it;
 
     /* actual update of entry */
     it = cache_get_by_addr(cache, addr);
 
+    if (it->it_data && it->it_addr != addr &&
+        it->it_age + CACHED_PAGE_LIFETIME > current_age) {
+        /* the cache page is fresh, don't replace it */
+        return -1;
+    }
     /* allocate page */
     if (!it->it_data) {
         it->it_data = g_try_malloc(cache->page_size);
@@ -173,7 +183,7 @@ int cache_insert(PageCache *cache, uint64_t addr, const uint8_t *pdata)
 
     memcpy(it->it_data, pdata, cache->page_size);
 
-    it->it_age = ++cache->max_item_age;
+    it->it_age = current_age;
     it->it_addr = addr;
 
     return 0;

@@ -432,9 +432,8 @@ static const VMStateDescription vmstate_lm_kbd = {
     .name = "LM8323",
     .version_id = 0,
     .minimum_version_id = 0,
-    .minimum_version_id_old = 0,
     .post_load = lm_kbd_post_load,
-    .fields      = (VMStateField []) {
+    .fields = (VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, LM823KbdState),
         VMSTATE_UINT8(i2c_dir, LM823KbdState),
         VMSTATE_UINT8(i2c_cycle, LM823KbdState),
@@ -456,7 +455,7 @@ static const VMStateDescription vmstate_lm_kbd = {
         VMSTATE_UINT16_ARRAY(pwm.file, LM823KbdState, 256),
         VMSTATE_UINT8(pwm.faddr, LM823KbdState),
         VMSTATE_BUFFER(pwm.addr, LM823KbdState),
-        VMSTATE_TIMER_ARRAY(pwm.tm, LM823KbdState, 3),
+        VMSTATE_TIMER_PTR_ARRAY(pwm.tm, LM823KbdState, 3),
         VMSTATE_END_OF_LIST()
     }
 };

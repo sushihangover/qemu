@@ -24,14 +24,13 @@
 #include "qemu-common.h"
 
 #define TARGET_LONG_BITS 64
+#define ALIGNED_ONLY
 
 #define CPUArchState struct CPUAlphaState
 
 #include "exec/cpu-defs.h"
 
 #include "fpu/softfloat.h"
-
-#define TARGET_HAS_ICE 1
 
 #define ELF_MACHINE     EM_ALPHA
 
@@ -430,14 +429,7 @@ void alpha_translate_init(void);
 
 AlphaCPU *cpu_alpha_init(const char *cpu_model);
 
-static inline CPUAlphaState *cpu_init(const char *cpu_model)
-{
-    AlphaCPU *cpu = cpu_alpha_init(cpu_model);
-    if (cpu == NULL) {
-        return NULL;
-    }
-    return &cpu->env;
-}
+#define cpu_init(cpu_model) CPU(cpu_alpha_init(cpu_model))
 
 void alpha_cpu_list(FILE *f, fprintf_function cpu_fprintf);
 int cpu_alpha_exec(CPUAlphaState *s);

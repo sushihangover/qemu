@@ -3,7 +3,6 @@
 #include "ui/qemu-spice.h"
 #include "sysemu/char.h"
 #include <spice.h>
-#include <spice-experimental.h>
 #include <spice/protocol.h>
 
 #include "qemu/osdep.h"
@@ -159,7 +158,7 @@ static gboolean spice_char_source_dispatch(GSource *source,
     return func(NULL, G_IO_OUT, user_data);
 }
 
-GSourceFuncs SpiceCharSourceFuncs = {
+static GSourceFuncs SpiceCharSourceFuncs = {
     .prepare  = spice_char_source_prepare,
     .check    = spice_char_source_check,
     .dispatch = spice_char_source_dispatch,
@@ -268,7 +267,7 @@ static CharDriverState *chr_open(const char *subtype,
     CharDriverState *chr;
     SpiceCharDriver *s;
 
-    chr = g_malloc0(sizeof(CharDriverState));
+    chr = qemu_chr_alloc();
     s = g_malloc0(sizeof(SpiceCharDriver));
     s->chr = chr;
     s->active = false;
@@ -368,10 +367,10 @@ static void qemu_chr_parse_spice_port(QemuOpts *opts, ChardevBackend *backend,
 
 static void register_types(void)
 {
-    register_char_driver_qapi("spicevmc", CHARDEV_BACKEND_KIND_SPICEVMC,
-                              qemu_chr_parse_spice_vmc);
-    register_char_driver_qapi("spiceport", CHARDEV_BACKEND_KIND_SPICEPORT,
-                              qemu_chr_parse_spice_port);
+    register_char_driver("spicevmc", CHARDEV_BACKEND_KIND_SPICEVMC,
+                         qemu_chr_parse_spice_vmc);
+    register_char_driver("spiceport", CHARDEV_BACKEND_KIND_SPICEPORT,
+                         qemu_chr_parse_spice_port);
 }
 
 type_init(register_types);

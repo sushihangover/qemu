@@ -77,8 +77,9 @@ typedef struct vscsi_req {
     SCSIRequest             *sreq;
     uint32_t                qtag; /* qemu tag != srp tag */
     bool                    active;
-    uint32_t                data_len;
     bool                    writing;
+    bool                    dma_error;
+    uint32_t                data_len;
     uint32_t                senselen;
     uint8_t                 sense[SCSI_SENSE_BUF_SIZE];
 
@@ -536,8 +537,8 @@ static void vscsi_transfer_data(SCSIRequest *sreq, uint32_t len)
     }
     if (rc < 0) {
         fprintf(stderr, "VSCSI: RDMA error rc=%d!\n", rc);
-        vscsi_makeup_sense(s, req, HARDWARE_ERROR, 0, 0);
-        scsi_req_abort(req->sreq, CHECK_CONDITION);
+        req->dma_error = true;
+        scsi_req_cancel(req->sreq);
         return;
     }
 
@@ -591,6 +592,12 @@ static void vscsi_request_cancelled(SCSIRequest *sreq)
 {
     vscsi_req *req = sreq->hba_private;
 
+    if (req->dma_error) {
+        VSCSIState *s = VIO_SPAPR_VSCSI_DEVICE(sreq->bus->qbus.parent);
+
+        vscsi_makeup_sense(s, req, HARDWARE_ERROR, 0, 0);
+        vscsi_send_rsp(s, req, CHECK_CONDITION, 0, 0);
+    }
     vscsi_put_req(req);
 }
 
@@ -598,8 +605,7 @@ static const VMStateDescription vmstate_spapr_vscsi_req = {
     .name = "spapr_vscsi_req",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
-    .fields      = (VMStateField []) {
+    .fields = (VMStateField[]) {
         VMSTATE_BUFFER(crq.raw, vscsi_req),
         VMSTATE_BUFFER(iu.srp.reserved, vscsi_req),
         VMSTATE_UINT32(qtag, vscsi_req),
@@ -624,7 +630,7 @@ static void vscsi_save_request(QEMUFile *f, SCSIRequest *sreq)
     vscsi_req *req = sreq->hba_private;
     assert(req->active);
 
-    vmstate_save_state(f, &vmstate_spapr_vscsi_req, req);
+    vmstate_save_state(f, &vmstate_spapr_vscsi_req, req, NULL);
 
     DPRINTF("VSCSI: saving tag=%u, current desc#%d, offset=%x\n",
             req->qtag, req->cur_desc_num, req->cur_desc_offset);
@@ -690,7 +696,7 @@ static void vscsi_inquiry_no_target(VSCSIState *s, vscsi_req *req)
     int rc, len, alen;
 
     /* We dont do EVPD. Also check that page_code is 0 */
-    if ((cdb[1] & 0x01) || (cdb[1] & 0x01) || cdb[2] != 0) {
+    if ((cdb[1] & 0x01) || cdb[2] != 0) {
         /* Send INVALID FIELD IN CDB */
         vscsi_makeup_sense(s, req, ILLEGAL_REQUEST, 0x24, 0);
         vscsi_send_rsp(s, req, CHECK_CONDITION, 0, 0);
@@ -800,8 +806,9 @@ static int vscsi_queue_cmd(VSCSIState *s, vscsi_req *req)
     req->sreq = scsi_req_new(sdev, req->qtag, lun, srp->cmd.cdb, req);
     n = scsi_req_enqueue(req->sreq);
 
-    DPRINTF("VSCSI: Queued command tag 0x%x CMD 0x%x LUN %d ret: %d\n",
-            req->qtag, srp->cmd.cdb[0], lun, n);
+    DPRINTF("VSCSI: Queued command tag 0x%x CMD 0x%x=%s LUN %d ret: %d\n",
+            req->qtag, srp->cmd.cdb[0], scsi_command_name(srp->cmd.cdb[0]),
+            lun, n);
 
     if (n) {
         /* Transfer direction must be set before preprocessing the
@@ -1205,24 +1212,17 @@ static void spapr_vscsi_reset(VIOsPAPRDevice *dev)
     }
 }
 
-static int spapr_vscsi_init(VIOsPAPRDevice *dev)
+static void spapr_vscsi_realize(VIOsPAPRDevice *dev, Error **errp)
 {
     VSCSIState *s = VIO_SPAPR_VSCSI_DEVICE(dev);
-    Error *err = NULL;
 
     dev->crq.SendFunc = vscsi_do_crq;
 
     scsi_bus_new(&s->bus, sizeof(s->bus), DEVICE(dev),
                  &vscsi_scsi_info, NULL);
     if (!dev->qdev.hotplugged) {
-        scsi_bus_legacy_handle_cmdline(&s->bus, &err);
-        if (err != NULL) {
-            error_free(err);
-            return -1;
-        }
+        scsi_bus_legacy_handle_cmdline(&s->bus, errp);
     }
-
-    return 0;
 }
 
 void spapr_vscsi_create(VIOsPAPRBus *bus)
@@ -1260,8 +1260,7 @@ static const VMStateDescription vmstate_spapr_vscsi = {
     .name = "spapr_vscsi",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
-    .fields      = (VMStateField []) {
+    .fields = (VMStateField[]) {
         VMSTATE_SPAPR_VIO(vdev, VSCSIState),
         /* VSCSI state */
         /* ???? */
@@ -1275,7 +1274,7 @@ static void spapr_vscsi_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     VIOsPAPRDeviceClass *k = VIO_SPAPR_DEVICE_CLASS(klass);
 
-    k->init = spapr_vscsi_init;
+    k->realize = spapr_vscsi_realize;
     k->reset = spapr_vscsi_reset;
     k->devnode = spapr_vscsi_devnode;
     k->dt_name = "v-scsi";

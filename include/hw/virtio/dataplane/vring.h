@@ -17,8 +17,8 @@
 #ifndef VRING_H
 #define VRING_H
 
-#include <linux/virtio_ring.h>
 #include "qemu-common.h"
+#include "standard-headers/linux/virtio_ring.h"
 #include "hw/virtio/virtio.h"
 
 typedef struct {
@@ -31,17 +31,6 @@ typedef struct {
     bool broken;                    /* was there a fatal error? */
 } Vring;
 
-static inline unsigned int vring_get_num(Vring *vring)
-{
-    return vring->vr.num;
-}
-
-/* Are there more descriptors available? */
-static inline bool vring_more_avail(Vring *vring)
-{
-    return vring->vr.avail->idx != vring->last_avail_idx;
-}
-
 /* Fail future vring_pop() and vring_push() calls until reset */
 static inline void vring_set_broken(Vring *vring)
 {
@@ -53,8 +42,8 @@ void vring_teardown(Vring *vring, VirtIODevice *vdev, int n);
 void vring_disable_notification(VirtIODevice *vdev, Vring *vring);
 bool vring_enable_notification(VirtIODevice *vdev, Vring *vring);
 bool vring_should_notify(VirtIODevice *vdev, Vring *vring);
-int vring_pop(VirtIODevice *vdev, Vring *vring, VirtQueueElement **elem);
-void vring_push(Vring *vring, VirtQueueElement *elem, int len);
-void vring_free_element(VirtQueueElement *elem);
+int vring_pop(VirtIODevice *vdev, Vring *vring, VirtQueueElement *elem);
+void vring_push(VirtIODevice *vdev, Vring *vring, VirtQueueElement *elem,
+                int len);
 
 #endif /* VRING_H */

@@ -39,9 +39,8 @@ void visit_end_implicit_struct(Visitor *v, Error **errp);
 void visit_start_list(Visitor *v, const char *name, Error **errp);
 GenericList *visit_next_list(Visitor *v, GenericList **list, Error **errp);
 void visit_end_list(Visitor *v, Error **errp);
-void visit_start_optional(Visitor *v, bool *present, const char *name,
-                          Error **errp);
-void visit_end_optional(Visitor *v, Error **errp);
+void visit_optional(Visitor *v, bool *present, const char *name,
+                    Error **errp);
 void visit_get_next_type(Visitor *v, int *obj, const int *qtypes,
                          const char *name, Error **errp);
 void visit_type_enum(Visitor *v, int *obj, const char *strings[],
@@ -59,5 +58,7 @@ void visit_type_size(Visitor *v, uint64_t *obj, const char *name, Error **errp);
 void visit_type_bool(Visitor *v, bool *obj, const char *name, Error **errp);
 void visit_type_str(Visitor *v, char **obj, const char *name, Error **errp);
 void visit_type_number(Visitor *v, double *obj, const char *name, Error **errp);
+bool visit_start_union(Visitor *v, bool data_present, Error **errp);
+void visit_end_union(Visitor *v, bool data_present, Error **errp);
 
 #endif

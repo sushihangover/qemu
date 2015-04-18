@@ -88,11 +88,7 @@ static char *rng_random_get_filename(Object *obj, Error **errp)
 {
     RndRandom *s = RNG_RANDOM(obj);
 
-    if (s->filename) {
-        return g_strdup(s->filename);
-    }
-
-    return NULL;
+    return g_strdup(s->filename);
 }
 
 static void rng_random_set_filename(Object *obj, const char *filename,
@@ -106,10 +102,7 @@ static void rng_random_set_filename(Object *obj, const char *filename,
         return;
     }
 
-    if (s->filename) {
-        g_free(s->filename);
-    }
-
+    g_free(s->filename);
     s->filename = g_strdup(filename);
 }
 

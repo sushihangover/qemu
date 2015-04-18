@@ -6,6 +6,7 @@
 #include "hw/qdev.h"
 #include "exec/memory.h"
 #include "sysemu/dma.h"
+#include "qapi/error.h"
 
 /* PCI includes legacy ISA access.  */
 #include "hw/isa/isa.h"
@@ -87,6 +88,8 @@
 #define PCI_DEVICE_ID_REDHAT_SERIAL2     0x0003
 #define PCI_DEVICE_ID_REDHAT_SERIAL4     0x0004
 #define PCI_DEVICE_ID_REDHAT_TEST        0x0005
+#define PCI_DEVICE_ID_REDHAT_SDHCI       0x0007
+#define PCI_DEVICE_ID_REDHAT_PCIE_HOST   0x0008
 #define PCI_DEVICE_ID_REDHAT_QXL         0x0100
 
 #define FMT_PCIBUS                      PRIx64
@@ -134,7 +137,7 @@ enum {
 #define PCI_CONFIG_HEADER_SIZE 0x40
 /* Size of the standard PCI config space */
 #define PCI_CONFIG_SPACE_SIZE 0x100
-/* Size of the standart PCIe config space: 4KB */
+/* Size of the standard PCIe config space: 4KB */
 #define PCIE_CONFIG_SPACE_SIZE  0x1000
 
 #define PCI_NUM_PINS 4 /* A-D */
@@ -157,6 +160,9 @@ enum {
     QEMU_PCI_CAP_SHPC = (1 << QEMU_PCI_SHPC_BITNR),
 #define QEMU_PCI_SLOTID_BITNR 6
     QEMU_PCI_CAP_SLOTID = (1 << QEMU_PCI_SLOTID_BITNR),
+    /* PCI Express capability - Power Controller Present */
+#define QEMU_PCIE_SLTCAP_PCP_BITNR 7
+    QEMU_PCIE_SLTCAP_PCP = (1 << QEMU_PCIE_SLTCAP_PCP_BITNR),
 };
 
 #define TYPE_PCI_DEVICE "pci-device"
@@ -179,7 +185,8 @@ typedef struct PCIINTxRoute {
 typedef struct PCIDeviceClass {
     DeviceClass parent_class;
 
-    int (*init)(PCIDevice *dev);
+    void (*realize)(PCIDevice *dev, Error **errp);
+    int (*init)(PCIDevice *dev);/* TODO convert to realize() and remove */
     PCIUnregisterFunc *exit;
     PCIConfigReadFunc *config_read;
     PCIConfigWriteFunc *config_write;
@@ -308,6 +315,9 @@ pcibus_t pci_get_bar_addr(PCIDevice *pci_dev, int region_num);
 
 int pci_add_capability(PCIDevice *pdev, uint8_t cap_id,
                        uint8_t offset, uint8_t size);
+int pci_add_capability2(PCIDevice *pdev, uint8_t cap_id,
+                       uint8_t offset, uint8_t size,
+                       Error **errp);
 
 void pci_del_capability(PCIDevice *pci_dev, uint8_t cap_id, uint8_t cap_size);
 
@@ -361,9 +371,6 @@ void pci_device_set_intx_routing_notifier(PCIDevice *dev,
                                           PCIINTxRoutingNotifier notifier);
 void pci_device_reset(PCIDevice *dev);
 
-PCIDevice *pci_nic_init(NICInfo *nd, PCIBus *rootbus,
-                        const char *default_model,
-                        const char *default_devaddr);
 PCIDevice *pci_nic_init_nofail(NICInfo *nd, PCIBus *rootbus,
                                const char *default_model,
                                const char *default_devaddr);
@@ -393,11 +400,7 @@ PCIBus *pci_device_root_bus(const PCIDevice *d);
 const char *pci_root_bus_path(PCIDevice *dev);
 PCIDevice *pci_find_device(PCIBus *bus, int bus_num, uint8_t devfn);
 int pci_qdev_find_device(const char *id, PCIDevice **pdev);
-PCIBus *pci_get_bus_devfn(int *devfnp, PCIBus *root, const char *devaddr);
 void pci_bus_get_w64_range(PCIBus *bus, Range *range);
-
-int pci_parse_devaddr(const char *addr, int *domp, int *busp,
-                      unsigned int *slotp, unsigned int *funcp);
 
 void pci_device_deassert_intx(PCIDevice *dev);
 

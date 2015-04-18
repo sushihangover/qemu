@@ -22,11 +22,13 @@
 #include "exec/exec-all.h"
 #include "exec/memory.h"
 #include "exec/address-spaces.h"
+#include "exec/cpu_ldst.h"
 
 #include "exec/cputlb.h"
 
 #include "exec/memory-internal.h"
 #include "exec/ram_addr.h"
+#include "tcg/tcg.h"
 
 //#define DEBUG_TLB
 //#define DEBUG_TLB_CHECK
@@ -58,8 +60,10 @@ void tlb_flush(CPUState *cpu, int flush_global)
     cpu->current_tb = NULL;
 
     memset(env->tlb_table, -1, sizeof(env->tlb_table));
+    memset(env->tlb_v_table, -1, sizeof(env->tlb_v_table));
     memset(cpu->tb_jmp_cache, 0, sizeof(cpu->tb_jmp_cache));
 
+    env->vtlb_index = 0;
     env->tlb_flush_addr = -1;
     env->tlb_flush_mask = 0;
     tlb_flush_count++;
@@ -104,6 +108,14 @@ void tlb_flush_page(CPUState *cpu, target_ulong addr)
     i = (addr >> TARGET_PAGE_BITS) & (CPU_TLB_SIZE - 1);
     for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
         tlb_flush_entry(&env->tlb_table[mmu_idx][i], addr);
+    }
+
+    /* check whether there are entries that need to be flushed in the vtlb */
+    for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
+        int k;
+        for (k = 0; k < CPU_VTLB_SIZE; k++) {
+            tlb_flush_entry(&env->tlb_v_table[mmu_idx][k], addr);
+        }
     }
 
     tb_flush_jmp_cache(cpu, addr);
@@ -170,6 +182,11 @@ void cpu_tlb_reset_dirty_all(ram_addr_t start1, ram_addr_t length)
                 tlb_reset_dirty_range(&env->tlb_table[mmu_idx][i],
                                       start1, length);
             }
+
+            for (i = 0; i < CPU_VTLB_SIZE; i++) {
+                tlb_reset_dirty_range(&env->tlb_v_table[mmu_idx][i],
+                                      start1, length);
+            }
         }
     }
 }
@@ -192,6 +209,13 @@ void tlb_set_dirty(CPUArchState *env, target_ulong vaddr)
     i = (vaddr >> TARGET_PAGE_BITS) & (CPU_TLB_SIZE - 1);
     for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
         tlb_set_dirty1(&env->tlb_table[mmu_idx][i], vaddr);
+    }
+
+    for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
+        int k;
+        for (k = 0; k < CPU_VTLB_SIZE; k++) {
+            tlb_set_dirty1(&env->tlb_v_table[mmu_idx][k], vaddr);
+        }
     }
 }
 
@@ -219,8 +243,12 @@ static void tlb_add_large_page(CPUArchState *env, target_ulong vaddr,
 }
 
 /* Add a new TLB entry. At most one entry for a given virtual address
-   is permitted. Only a single TARGET_PAGE_SIZE region is mapped, the
-   supplied size is only used by tlb_flush_page.  */
+ * is permitted. Only a single TARGET_PAGE_SIZE region is mapped, the
+ * supplied size is only used by tlb_flush_page.
+ *
+ * Called from TCG-generated code, which is under an RCU read-side
+ * critical section.
+ */
 void tlb_set_page(CPUState *cpu, target_ulong vaddr,
                   hwaddr paddr, int prot,
                   int mmu_idx, target_ulong size)
@@ -233,6 +261,7 @@ void tlb_set_page(CPUState *cpu, target_ulong vaddr,
     uintptr_t addend;
     CPUTLBEntry *te;
     hwaddr iotlb, xlat, sz;
+    unsigned vidx = env->vtlb_index++ % CPU_VTLB_SIZE;
 
     assert(size >= TARGET_PAGE_SIZE);
     if (size != TARGET_PAGE_SIZE) {
@@ -240,12 +269,12 @@ void tlb_set_page(CPUState *cpu, target_ulong vaddr,
     }
 
     sz = size;
-    section = address_space_translate_for_iotlb(cpu->as, paddr,
-                                                &xlat, &sz);
+    section = address_space_translate_for_iotlb(cpu, paddr, &xlat, &sz);
     assert(sz >= TARGET_PAGE_SIZE);
 
 #if defined(DEBUG_TLB)
-    printf("tlb_set_page: vaddr=" TARGET_FMT_lx " paddr=0x" TARGET_FMT_plx
+    qemu_log_mask(CPU_LOG_MMU,
+           "tlb_set_page: vaddr=" TARGET_FMT_lx " paddr=0x" TARGET_FMT_plx
            " prot=%x idx=%d\n",
            vaddr, paddr, prot, mmu_idx);
 #endif
@@ -265,8 +294,14 @@ void tlb_set_page(CPUState *cpu, target_ulong vaddr,
                                             prot, &address);
 
     index = (vaddr >> TARGET_PAGE_BITS) & (CPU_TLB_SIZE - 1);
-    env->iotlb[mmu_idx][index] = iotlb - vaddr;
     te = &env->tlb_table[mmu_idx][index];
+
+    /* do not discard the translation in te, evict it into a victim tlb */
+    env->tlb_v_table[mmu_idx][vidx] = *te;
+    env->iotlb_v[mmu_idx][vidx] = env->iotlb[mmu_idx][index];
+
+    /* refill the tlb */
+    env->iotlb[mmu_idx][index] = iotlb - vaddr;
     te->addend = addend - vaddr;
     if (prot & PAGE_READ) {
         te->addr_read = address;
@@ -315,7 +350,7 @@ tb_page_addr_t get_page_addr_code(CPUArchState *env1, target_ulong addr)
         cpu_ldub_code(env1, addr);
     }
     pd = env1->iotlb[mmu_idx][page_index] & ~TARGET_PAGE_MASK;
-    mr = iotlb_to_region(cpu->as, pd);
+    mr = iotlb_to_region(cpu, pd);
     if (memory_region_is_unassigned(mr)) {
         CPUClass *cc = CPU_GET_CLASS(cpu);
 
@@ -330,21 +365,36 @@ tb_page_addr_t get_page_addr_code(CPUArchState *env1, target_ulong addr)
     return qemu_ram_addr_from_host_nofail(p);
 }
 
+#define MMUSUFFIX _mmu
+
+#define SHIFT 0
+#include "softmmu_template.h"
+
+#define SHIFT 1
+#include "softmmu_template.h"
+
+#define SHIFT 2
+#include "softmmu_template.h"
+
+#define SHIFT 3
+#include "softmmu_template.h"
+#undef MMUSUFFIX
+
 #define MMUSUFFIX _cmmu
-#undef GETPC
-#define GETPC() ((uintptr_t)0)
+#undef GETPC_ADJ
+#define GETPC_ADJ 0
+#undef GETRA
+#define GETRA() ((uintptr_t)0)
 #define SOFTMMU_CODE_ACCESS
 
 #define SHIFT 0
-#include "exec/softmmu_template.h"
+#include "softmmu_template.h"
 
 #define SHIFT 1
-#include "exec/softmmu_template.h"
+#include "softmmu_template.h"
 
 #define SHIFT 2
-#include "exec/softmmu_template.h"
+#include "softmmu_template.h"
 
 #define SHIFT 3
-#include "exec/softmmu_template.h"
-
-#undef env
+#include "softmmu_template.h"

@@ -20,7 +20,7 @@
 #include "hw/boards.h"
 #include "sysemu/sysemu.h"
 #include "hw/block/flash.h"
-#include "sysemu/blockdev.h"
+#include "sysemu/block-backend.h"
 #include "ui/console.h"
 #include "audio/audio.h"
 #include "exec/address-spaces.h"
@@ -164,7 +164,6 @@ static VMStateDescription vmstate_zipit_lcd_state = {
     .name = "zipit-lcd",
     .version_id = 2,
     .minimum_version_id = 2,
-    .minimum_version_id_old = 2,
     .fields = (VMStateField[]) {
         VMSTATE_SSI_SLAVE(ssidev, ZipitLCD),
         VMSTATE_INT32(selected, ZipitLCD),
@@ -275,7 +274,6 @@ static VMStateDescription vmstate_aer915_state = {
     .name = "aer915",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
     .fields = (VMStateField[]) {
         VMSTATE_INT32(len, AER915State),
         VMSTATE_BUFFER(buf, AER915State),
@@ -302,12 +300,12 @@ static const TypeInfo aer915_info = {
     .class_init    = aer915_class_init,
 };
 
-static void z2_init(QEMUMachineInitArgs *args)
+static void z2_init(MachineState *machine)
 {
-    const char *cpu_model = args->cpu_model;
-    const char *kernel_filename = args->kernel_filename;
-    const char *kernel_cmdline = args->kernel_cmdline;
-    const char *initrd_filename = args->initrd_filename;
+    const char *cpu_model = machine->cpu_model;
+    const char *kernel_filename = machine->kernel_filename;
+    const char *kernel_cmdline = machine->kernel_cmdline;
+    const char *initrd_filename = machine->initrd_filename;
     MemoryRegion *address_space_mem = get_system_memory();
     uint32_t sector_len = 0x10000;
     PXA2xxState *mpu;
@@ -338,9 +336,9 @@ static void z2_init(QEMUMachineInitArgs *args)
 
     if (!pflash_cfi01_register(Z2_FLASH_BASE,
                                NULL, "z2.flash0", Z2_FLASH_SIZE,
-                               dinfo ? dinfo->bdrv : NULL, sector_len,
-                               Z2_FLASH_SIZE / sector_len, 4, 0, 0, 0, 0,
-                               be)) {
+                               dinfo ? blk_by_legacy_dinfo(dinfo) : NULL,
+                               sector_len, Z2_FLASH_SIZE / sector_len,
+                               4, 0, 0, 0, 0, be)) {
         fprintf(stderr, "qemu: Error registering flash memory.\n");
         exit(1);
     }
@@ -365,7 +363,7 @@ static void z2_init(QEMUMachineInitArgs *args)
     wm8750_data_req_set(wm, mpu->i2s->data_req, mpu->i2s);
 
     qdev_connect_gpio_out(mpu->gpio, Z2_GPIO_LCD_CS,
-        qemu_allocate_irqs(z2_lcd_cs, z2_lcd, 1)[0]);
+                          qemu_allocate_irq(z2_lcd_cs, z2_lcd, 0));
 
     z2_binfo.kernel_filename = kernel_filename;
     z2_binfo.kernel_cmdline = kernel_cmdline;

@@ -251,8 +251,7 @@ static const VMStateDescription vmstate_pl011 = {
     .name = "pl011",
     .version_id = 2,
     .minimum_version_id = 2,
-    .minimum_version_id_old = 2,
-    .fields      = (VMStateField[]) {
+    .fields = (VMStateField[]) {
         VMSTATE_UINT32(readbuff, PL011State),
         VMSTATE_UINT32(flags, PL011State),
         VMSTATE_UINT32(lcr, PL011State),
@@ -294,6 +293,7 @@ static void pl011_realize(DeviceState *dev, Error **errp)
 {
     PL011State *s = PL011(dev);
 
+    /* FIXME use a qdev chardev prop instead of qemu_char_get_next_serial() */
     s->chr = qemu_char_get_next_serial();
 
     if (s->chr) {
@@ -308,6 +308,8 @@ static void pl011_class_init(ObjectClass *oc, void *data)
 
     dc->realize = pl011_realize;
     dc->vmsd = &vmstate_pl011;
+    /* Reason: realize() method uses qemu_char_get_next_serial() */
+    dc->cannot_instantiate_with_device_add_yet = true;
 }
 
 static const TypeInfo pl011_arm_info = {

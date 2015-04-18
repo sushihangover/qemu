@@ -10,6 +10,7 @@
  * GNU GPL, version 2 or (at your option) any later version.
  */
 
+#include "sysemu/block-backend.h"
 #include "sysemu/blockdev.h"
 #include "hw/ssi.h"
 #include "hw/sd.h"
@@ -230,8 +231,17 @@ static int ssi_sd_load(QEMUFile *f, void *opaque, int version_id)
     for (i = 0; i < 5; i++)
         s->response[i] = qemu_get_be32(f);
     s->arglen = qemu_get_be32(f);
+    if (s->mode == SSI_SD_CMDARG &&
+        (s->arglen < 0 || s->arglen >= ARRAY_SIZE(s->cmdarg))) {
+        return -EINVAL;
+    }
     s->response_pos = qemu_get_be32(f);
     s->stopping = qemu_get_be32(f);
+    if (s->mode == SSI_SD_RESPONSE &&
+        (s->response_pos < 0 || s->response_pos >= ARRAY_SIZE(s->response) ||
+        (!s->stopping && s->arglen > ARRAY_SIZE(s->response)))) {
+        return -EINVAL;
+    }
 
     ss->cs = qemu_get_be32(f);
 
@@ -245,8 +255,9 @@ static int ssi_sd_init(SSISlave *d)
     DriveInfo *dinfo;
 
     s->mode = SSI_SD_CMD;
+    /* FIXME use a qdev drive property instead of drive_get_next() */
     dinfo = drive_get_next(IF_SD);
-    s->sd = sd_init(dinfo ? dinfo->bdrv : NULL, true);
+    s->sd = sd_init(dinfo ? blk_by_legacy_dinfo(dinfo) : NULL, true);
     if (s->sd == NULL) {
         return -1;
     }

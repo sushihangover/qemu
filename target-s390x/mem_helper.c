@@ -19,26 +19,12 @@
  */
 
 #include "cpu.h"
-#include "helper.h"
+#include "exec/helper-proto.h"
+#include "exec/cpu_ldst.h"
 
 /*****************************************************************************/
 /* Softmmu support */
 #if !defined(CONFIG_USER_ONLY)
-#include "exec/softmmu_exec.h"
-
-#define MMUSUFFIX _mmu
-
-#define SHIFT 0
-#include "exec/softmmu_template.h"
-
-#define SHIFT 1
-#include "exec/softmmu_template.h"
-
-#define SHIFT 2
-#include "exec/softmmu_template.h"
-
-#define SHIFT 3
-#include "exec/softmmu_template.h"
 
 /* try to fill the TLB and return an exception if error. If retaddr is
    NULL, it means that the function was called in C code (i.e. not
@@ -79,7 +65,7 @@ static void mvc_fast_memset(CPUS390XState *env, uint32_t l, uint64_t dest,
     uint64_t asc = env->psw.mask & PSW_MASK_ASC;
     int flags;
 
-    if (mmu_translate(env, dest, 1, asc, &dest_phys, &flags)) {
+    if (mmu_translate(env, dest, 1, asc, &dest_phys, &flags, true)) {
         cpu_stb_data(env, dest, byte);
         cpu_abort(CPU(cpu), "should never reach here");
     }
@@ -104,13 +90,13 @@ static void mvc_fast_memmove(CPUS390XState *env, uint32_t l, uint64_t dest,
     uint64_t asc = env->psw.mask & PSW_MASK_ASC;
     int flags;
 
-    if (mmu_translate(env, dest, 1, asc, &dest_phys, &flags)) {
+    if (mmu_translate(env, dest, 1, asc, &dest_phys, &flags, true)) {
         cpu_stb_data(env, dest, 0);
         cpu_abort(CPU(cpu), "should never reach here");
     }
     dest_phys |= dest & ~TARGET_PAGE_MASK;
 
-    if (mmu_translate(env, src, 0, asc, &src_phys, &flags)) {
+    if (mmu_translate(env, src, 0, asc, &src_phys, &flags, true)) {
         cpu_ldub_data(env, src);
         cpu_abort(CPU(cpu), "should never reach here");
     }
@@ -504,8 +490,16 @@ uint32_t HELPER(ex)(CPUS390XState *env, uint32_t cc, uint64_t v1,
             helper_mvc(env, l, get_address(env, 0, b1, d1),
                        get_address(env, 0, b2, d2));
             break;
+        case 0x400:
+            cc = helper_nc(env, l, get_address(env, 0, b1, d1),
+                            get_address(env, 0, b2, d2));
+            break;
         case 0x500:
             cc = helper_clc(env, l, get_address(env, 0, b1, d1),
+                            get_address(env, 0, b2, d2));
+            break;
+        case 0x600:
+            cc = helper_oc(env, l, get_address(env, 0, b1, d1),
                             get_address(env, 0, b2, d2));
             break;
         case 0x700:
@@ -973,12 +967,12 @@ static uint32_t mvc_asc(CPUS390XState *env, int64_t l, uint64_t a1,
         cc = 3;
     }
 
-    if (mmu_translate(env, a1 & TARGET_PAGE_MASK, 1, mode1, &dest, &flags)) {
+    if (mmu_translate(env, a1, 1, mode1, &dest, &flags, true)) {
         cpu_loop_exit(CPU(s390_env_get_cpu(env)));
     }
     dest |= a1 & ~TARGET_PAGE_MASK;
 
-    if (mmu_translate(env, a2 & TARGET_PAGE_MASK, 0, mode2, &src, &flags)) {
+    if (mmu_translate(env, a2, 0, mode2, &src, &flags, true)) {
         cpu_loop_exit(CPU(s390_env_get_cpu(env)));
     }
     src |= a2 & ~TARGET_PAGE_MASK;
@@ -1048,12 +1042,34 @@ void HELPER(ptlb)(CPUS390XState *env)
     tlb_flush(CPU(cpu), 1);
 }
 
+/* load using real address */
+uint64_t HELPER(lura)(CPUS390XState *env, uint64_t addr)
+{
+    CPUState *cs = CPU(s390_env_get_cpu(env));
+
+    return (uint32_t)ldl_phys(cs->as, get_address(env, 0, 0, addr));
+}
+
+uint64_t HELPER(lurag)(CPUS390XState *env, uint64_t addr)
+{
+    CPUState *cs = CPU(s390_env_get_cpu(env));
+
+    return ldq_phys(cs->as, get_address(env, 0, 0, addr));
+}
+
 /* store using real address */
 void HELPER(stura)(CPUS390XState *env, uint64_t addr, uint64_t v1)
 {
     CPUState *cs = CPU(s390_env_get_cpu(env));
 
-    stw_phys(cs->as, get_address(env, 0, 0, addr), (uint32_t)v1);
+    stl_phys(cs->as, get_address(env, 0, 0, addr), (uint32_t)v1);
+}
+
+void HELPER(sturg)(CPUS390XState *env, uint64_t addr, uint64_t v1)
+{
+    CPUState *cs = CPU(s390_env_get_cpu(env));
+
+    stq_phys(cs->as, get_address(env, 0, 0, addr), v1);
 }
 
 /* load real address */
@@ -1072,7 +1088,7 @@ uint64_t HELPER(lra)(CPUS390XState *env, uint64_t addr)
     }
 
     cs->exception_index = old_exc;
-    if (mmu_translate(env, addr, 0, asc, &ret, &flags)) {
+    if (mmu_translate(env, addr, 0, asc, &ret, &flags, true)) {
         cc = 3;
     }
     if (cs->exception_index == EXCP_PGM) {

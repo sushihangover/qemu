@@ -14,24 +14,14 @@
 #include "qom/object.h"
 #include "qom/object_interfaces.h"
 #include "qemu/module.h"
-#include "qemu/thread.h"
 #include "block/aio.h"
 #include "sysemu/iothread.h"
 #include "qmp-commands.h"
+#include "qemu/error-report.h"
 
 #define IOTHREADS_PATH "/objects"
 
 typedef ObjectClass IOThreadClass;
-struct IOThread {
-    Object parent_obj;
-
-    QemuThread thread;
-    AioContext *ctx;
-    QemuMutex init_done_lock;
-    QemuCond init_done_cond;    /* is thread initialization done? */
-    bool stopping;
-    int thread_id;
-};
 
 #define IOTHREAD_GET_CLASS(obj) \
    OBJECT_GET_CLASS(IOThreadClass, obj, TYPE_IOTHREAD)
@@ -41,6 +31,7 @@ struct IOThread {
 static void *iothread_run(void *opaque)
 {
     IOThread *iothread = opaque;
+    bool blocking;
 
     qemu_mutex_lock(&iothread->init_done_lock);
     iothread->thread_id = qemu_get_thread_id();
@@ -49,8 +40,10 @@ static void *iothread_run(void *opaque)
 
     while (!iothread->stopping) {
         aio_context_acquire(iothread->ctx);
-        while (!iothread->stopping && aio_poll(iothread->ctx, true)) {
+        blocking = true;
+        while (!iothread->stopping && aio_poll(iothread->ctx, blocking)) {
             /* Progress was made, keep going */
+            blocking = false;
         }
         aio_context_release(iothread->ctx);
     }
@@ -61,6 +54,9 @@ static void iothread_instance_finalize(Object *obj)
 {
     IOThread *iothread = IOTHREAD(obj);
 
+    if (!iothread->ctx) {
+        return;
+    }
     iothread->stopping = true;
     aio_notify(iothread->ctx);
     qemu_thread_join(&iothread->thread);
@@ -71,11 +67,16 @@ static void iothread_instance_finalize(Object *obj)
 
 static void iothread_complete(UserCreatable *obj, Error **errp)
 {
+    Error *local_error = NULL;
     IOThread *iothread = IOTHREAD(obj);
 
     iothread->stopping = false;
-    iothread->ctx = aio_context_new();
     iothread->thread_id = -1;
+    iothread->ctx = aio_context_new(&local_error);
+    if (!iothread->ctx) {
+        error_propagate(errp, local_error);
+        return;
+    }
 
     qemu_mutex_init(&iothread->init_done_lock);
     qemu_cond_init(&iothread->init_done_cond);

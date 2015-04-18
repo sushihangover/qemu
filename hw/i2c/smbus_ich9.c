@@ -48,7 +48,6 @@ static const VMStateDescription vmstate_ich9_smbus = {
     .name = "ich9_smb",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
     .fields = (VMStateField[]) {
         VMSTATE_PCI_DEVICE(dev, struct ICH9SMBState),
         VMSTATE_END_OF_LIST()
@@ -72,7 +71,7 @@ static void ich9_smbus_write_config(PCIDevice *d, uint32_t address,
     }
 }
 
-static int ich9_smbus_initfn(PCIDevice *d)
+static void ich9_smbus_realize(PCIDevice *d, Error **errp)
 {
     ICH9SMBState *s = ICH9_SMB_DEVICE(d);
 
@@ -85,7 +84,6 @@ static int ich9_smbus_initfn(PCIDevice *d)
     pm_smbus_init(&d->qdev, &s->smb);
     pci_register_bar(d, ICH9_SMB_SMB_BASE_BAR, PCI_BASE_ADDRESS_SPACE_IO,
                      &s->smb.io);
-    return 0;
 }
 
 static void ich9_smb_class_init(ObjectClass *klass, void *data)
@@ -99,7 +97,7 @@ static void ich9_smb_class_init(ObjectClass *klass, void *data)
     k->class_id = PCI_CLASS_SERIAL_SMBUS;
     dc->vmsd = &vmstate_ich9_smbus;
     dc->desc = "ICH9 SMBUS Bridge";
-    k->init = ich9_smbus_initfn;
+    k->realize = ich9_smbus_realize;
     k->config_write = ich9_smbus_write_config;
     /*
      * Reason: part of ICH9 southbridge, needs to be wired up by

@@ -33,6 +33,10 @@
 #include "hw/acpi/pcihp.h"
 #include "hw/acpi/cpu_hotplug.h"
 #include "hw/hotplug.h"
+#include "hw/mem/pc-dimm.h"
+#include "hw/acpi/memory_hotplug.h"
+#include "hw/acpi/acpi_dev_interface.h"
+#include "hw/xen/xen.h"
 
 //#define DEBUG
 
@@ -80,7 +84,8 @@ typedef struct PIIX4PMState {
     uint8_t s4_val;
 
     AcpiCpuHotplug gpe_cpu;
-    Notifier cpu_added_notifier;
+
+    MemHotplugState acpi_memory_hotplug;
 } PIIX4PMState;
 
 #define TYPE_PIIX4_PM "PIIX4_PM"
@@ -177,8 +182,7 @@ static const VMStateDescription vmstate_gpe = {
     .name = "gpe",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
-    .fields      = (VMStateField []) {
+    .fields = (VMStateField[]) {
         VMSTATE_GPE_ARRAY(sts, ACPIGPE),
         VMSTATE_GPE_ARRAY(en, ACPIGPE),
         VMSTATE_END_OF_LIST()
@@ -189,8 +193,7 @@ static const VMStateDescription vmstate_pci_status = {
     .name = "pci_status",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
-    .fields      = (VMStateField []) {
+    .fields = (VMStateField[]) {
         VMSTATE_UINT32(up, struct AcpiPciHpPciStatus),
         VMSTATE_UINT32(down, struct AcpiPciHpPciStatus),
         VMSTATE_END_OF_LIST()
@@ -246,6 +249,23 @@ static bool vmstate_test_no_use_acpi_pci_hotplug(void *opaque, int version_id)
     return !s->use_acpi_pci_hotplug;
 }
 
+static bool vmstate_test_use_memhp(void *opaque)
+{
+    PIIX4PMState *s = opaque;
+    return s->acpi_memory_hotplug.is_enabled;
+}
+
+static const VMStateDescription vmstate_memhp_state = {
+    .name = "piix4_pm/memhp",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .minimum_version_id_old = 1,
+    .fields      = (VMStateField[]) {
+        VMSTATE_MEMORY_HOTPLUG(acpi_memory_hotplug, PIIX4PMState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 /* qemu-kvm 1.2 uses version 3 but advertised as 2
  * To support incoming qemu-kvm 1.2 migration, change version_id
  * and minimum_version_id to 2 below (which breaks migration from
@@ -259,13 +279,13 @@ static const VMStateDescription vmstate_acpi = {
     .minimum_version_id_old = 1,
     .load_state_old = acpi_load_old,
     .post_load = vmstate_acpi_post_load,
-    .fields      = (VMStateField []) {
+    .fields = (VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, PIIX4PMState),
         VMSTATE_UINT16(ar.pm1.evt.sts, PIIX4PMState),
         VMSTATE_UINT16(ar.pm1.evt.en, PIIX4PMState),
         VMSTATE_UINT16(ar.pm1.cnt.cnt, PIIX4PMState),
         VMSTATE_STRUCT(apm, PIIX4PMState, 0, vmstate_apm, APMState),
-        VMSTATE_TIMER(ar.tmr.timer, PIIX4PMState),
+        VMSTATE_TIMER_PTR(ar.tmr.timer, PIIX4PMState),
         VMSTATE_INT64(ar.tmr.overflow_time, PIIX4PMState),
         VMSTATE_STRUCT(ar.gpe, PIIX4PMState, 2, vmstate_gpe, ACPIGPE),
         VMSTATE_STRUCT_TEST(
@@ -276,6 +296,13 @@ static const VMStateDescription vmstate_acpi = {
             struct AcpiPciHpPciStatus),
         VMSTATE_PCI_HOTPLUG(acpi_pci_hotplug, PIIX4PMState,
                             vmstate_test_use_acpi_pci_hotplug),
+        VMSTATE_END_OF_LIST()
+    },
+    .subsections = (VMStateSubsection[]) {
+        {
+            .vmsd = &vmstate_memhp_state,
+            .needed = vmstate_test_use_memhp,
+        },
         VMSTATE_END_OF_LIST()
     }
 };
@@ -310,19 +337,44 @@ static void piix4_pm_powerdown_req(Notifier *n, void *opaque)
     acpi_pm1_evt_power_down(&s->ar);
 }
 
-static void piix4_pci_device_plug_cb(HotplugHandler *hotplug_dev,
-                                     DeviceState *dev, Error **errp)
+static void piix4_device_plug_cb(HotplugHandler *hotplug_dev,
+                                 DeviceState *dev, Error **errp)
 {
     PIIX4PMState *s = PIIX4_PM(hotplug_dev);
-    acpi_pcihp_device_plug_cb(&s->ar, s->irq, &s->acpi_pci_hotplug, dev, errp);
+
+    if (s->acpi_memory_hotplug.is_enabled &&
+        object_dynamic_cast(OBJECT(dev), TYPE_PC_DIMM)) {
+        acpi_memory_plug_cb(&s->ar, s->irq, &s->acpi_memory_hotplug, dev, errp);
+    } else if (object_dynamic_cast(OBJECT(dev), TYPE_PCI_DEVICE)) {
+        acpi_pcihp_device_plug_cb(&s->ar, s->irq, &s->acpi_pci_hotplug, dev,
+                                  errp);
+    } else if (object_dynamic_cast(OBJECT(dev), TYPE_CPU)) {
+        acpi_cpu_plug_cb(&s->ar, s->irq, &s->gpe_cpu, dev, errp);
+    } else {
+        error_setg(errp, "acpi: device plug request for not supported device"
+                   " type: %s", object_get_typename(OBJECT(dev)));
+    }
 }
 
-static void piix4_pci_device_unplug_cb(HotplugHandler *hotplug_dev,
-                                       DeviceState *dev, Error **errp)
+static void piix4_device_unplug_request_cb(HotplugHandler *hotplug_dev,
+                                           DeviceState *dev, Error **errp)
 {
     PIIX4PMState *s = PIIX4_PM(hotplug_dev);
-    acpi_pcihp_device_unplug_cb(&s->ar, s->irq, &s->acpi_pci_hotplug, dev,
-                                errp);
+
+    if (object_dynamic_cast(OBJECT(dev), TYPE_PCI_DEVICE)) {
+        acpi_pcihp_device_unplug_cb(&s->ar, s->irq, &s->acpi_pci_hotplug, dev,
+                                    errp);
+    } else {
+        error_setg(errp, "acpi: device unplug request for not supported device"
+                   " type: %s", object_get_typename(OBJECT(dev)));
+    }
+}
+
+static void piix4_device_unplug_cb(HotplugHandler *hotplug_dev,
+                                   DeviceState *dev, Error **errp)
+{
+    error_setg(errp, "acpi: device unplug for not supported device"
+               " type: %s", object_get_typename(OBJECT(dev)));
 }
 
 static void piix4_update_bus_hotplug(PCIBus *pci_bus, void *opaque)
@@ -375,7 +427,7 @@ static void piix4_pm_add_propeties(PIIX4PMState *s)
                                   &s->io_base, NULL);
 }
 
-static int piix4_pm_initfn(PCIDevice *dev)
+static void piix4_pm_realize(PCIDevice *dev, Error **errp)
 {
     PIIX4PMState *s = PIIX4_PM(dev);
     uint8_t *pci_conf;
@@ -425,7 +477,6 @@ static int piix4_pm_initfn(PCIDevice *dev)
     piix4_acpi_system_hot_add_init(pci_address_space_io(dev), dev->bus, s);
 
     piix4_pm_add_propeties(s);
-    return 0;
 }
 
 Object *piix4_pm_find(void)
@@ -441,18 +492,25 @@ Object *piix4_pm_find(void)
 
 I2CBus *piix4_pm_init(PCIBus *bus, int devfn, uint32_t smb_io_base,
                       qemu_irq sci_irq, qemu_irq smi_irq,
-                      int kvm_enabled, FWCfgState *fw_cfg)
+                      int kvm_enabled, FWCfgState *fw_cfg,
+                      DeviceState **piix4_pm)
 {
     DeviceState *dev;
     PIIX4PMState *s;
 
     dev = DEVICE(pci_create(bus, devfn, TYPE_PIIX4_PM));
     qdev_prop_set_uint32(dev, "smb_io_base", smb_io_base);
+    if (piix4_pm) {
+        *piix4_pm = dev;
+    }
 
     s = PIIX4_PM(dev);
     s->irq = sci_irq;
     s->smi_irq = smi_irq;
     s->kvm_enabled = kvm_enabled;
+    if (xen_enabled()) {
+        s->use_acpi_pci_hotplug = false;
+    }
 
     qdev_init_nofail(dev);
 
@@ -497,15 +555,6 @@ static const MemoryRegionOps piix4_gpe_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
-static void piix4_cpu_added_req(Notifier *n, void *opaque)
-{
-    PIIX4PMState *s = container_of(n, PIIX4PMState, cpu_added_notifier);
-
-    assert(s != NULL);
-    AcpiCpuHotplug_add(&s->ar.gpe, &s->gpe_cpu, CPU(opaque));
-    acpi_update_sci(&s->ar, s->irq);
-}
-
 static void piix4_acpi_system_hot_add_init(MemoryRegion *parent,
                                            PCIBus *bus, PIIX4PMState *s)
 {
@@ -513,13 +562,22 @@ static void piix4_acpi_system_hot_add_init(MemoryRegion *parent,
                           "acpi-gpe0", GPE_LEN);
     memory_region_add_subregion(parent, GPE_BASE, &s->io_gpe);
 
-    acpi_pcihp_init(&s->acpi_pci_hotplug, bus, parent,
+    acpi_pcihp_init(OBJECT(s), &s->acpi_pci_hotplug, bus, parent,
                     s->use_acpi_pci_hotplug);
 
-    AcpiCpuHotplug_init(parent, OBJECT(s), &s->gpe_cpu,
-                        PIIX4_CPU_HOTPLUG_IO_BASE);
-    s->cpu_added_notifier.notify = piix4_cpu_added_req;
-    qemu_register_cpu_added_notifier(&s->cpu_added_notifier);
+    acpi_cpu_hotplug_init(parent, OBJECT(s), &s->gpe_cpu,
+                          PIIX4_CPU_HOTPLUG_IO_BASE);
+
+    if (s->acpi_memory_hotplug.is_enabled) {
+        acpi_memory_hotplug_init(parent, OBJECT(s), &s->acpi_memory_hotplug);
+    }
+}
+
+static void piix4_ospm_status(AcpiDeviceIf *adev, ACPIOSTInfoList ***list)
+{
+    PIIX4PMState *s = PIIX4_PM(adev);
+
+    acpi_memory_ospm_status(&s->acpi_memory_hotplug, list);
 }
 
 static Property piix4_pm_properties[] = {
@@ -529,6 +587,8 @@ static Property piix4_pm_properties[] = {
     DEFINE_PROP_UINT8(ACPI_PM_PROP_S4_VAL, PIIX4PMState, s4_val, 2),
     DEFINE_PROP_BOOL("acpi-pci-hotplug-with-bridge-support", PIIX4PMState,
                      use_acpi_pci_hotplug, true),
+    DEFINE_PROP_BOOL("memory-hotplug-support", PIIX4PMState,
+                     acpi_memory_hotplug.is_enabled, true),
     DEFINE_PROP_END_OF_LIST(),
 };
 
@@ -537,8 +597,9 @@ static void piix4_pm_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
     HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(klass);
+    AcpiDeviceIfClass *adevc = ACPI_DEVICE_IF_CLASS(klass);
 
-    k->init = piix4_pm_initfn;
+    k->realize = piix4_pm_realize;
     k->config_write = pm_write_config;
     k->vendor_id = PCI_VENDOR_ID_INTEL;
     k->device_id = PCI_DEVICE_ID_INTEL_82371AB_3;
@@ -553,8 +614,10 @@ static void piix4_pm_class_init(ObjectClass *klass, void *data)
      */
     dc->cannot_instantiate_with_device_add_yet = true;
     dc->hotpluggable = false;
-    hc->plug = piix4_pci_device_plug_cb;
-    hc->unplug = piix4_pci_device_unplug_cb;
+    hc->plug = piix4_device_plug_cb;
+    hc->unplug_request = piix4_device_unplug_request_cb;
+    hc->unplug = piix4_device_unplug_cb;
+    adevc->ospm_status = piix4_ospm_status;
 }
 
 static const TypeInfo piix4_pm_info = {
@@ -564,6 +627,7 @@ static const TypeInfo piix4_pm_info = {
     .class_init    = piix4_pm_class_init,
     .interfaces = (InterfaceInfo[]) {
         { TYPE_HOTPLUG_HANDLER },
+        { TYPE_ACPI_DEVICE_IF },
         { }
     }
 };
