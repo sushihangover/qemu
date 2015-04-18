@@ -4791,8 +4791,8 @@ void arm_cpu_do_interrupt(CPUState *cs)
             new_mode = ARM_CPU_MODE_MON;
         }
         offset = 4;
-    case EXCP_SMC:
         break;
+    case EXCP_SMC:
         new_mode = ARM_CPU_MODE_MON;
         addr = 0x08;
         mask = CPSR_A | CPSR_I | CPSR_F;
