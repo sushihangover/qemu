@@ -12,10 +12,7 @@
 
 #include "qemu-common.h"
 #include "qapi/error.h"
-#include "qapi/qmp/qjson.h"
-#include "qapi/qmp/qdict.h"
-#include "qapi-types.h"
-#include "qapi/qmp/qerror.h"
+#include "qemu/error-report.h"
 
 struct Error
 {
@@ -44,7 +41,7 @@ void error_set(Error **errp, ErrorClass err_class, const char *fmt, ...)
     err->err_class = err_class;
 
     if (errp == &error_abort) {
-        error_report("%s", error_get_pretty(err));
+        error_report_err(err);
         abort();
     }
 
@@ -80,7 +77,7 @@ void error_set_errno(Error **errp, int os_errno, ErrorClass err_class,
     err->err_class = err_class;
 
     if (errp == &error_abort) {
-        error_report("%s", error_get_pretty(err));
+        error_report_err(err);
         abort();
     }
 
@@ -125,7 +122,7 @@ void error_set_win32(Error **errp, int win32_err, ErrorClass err_class,
     err->err_class = err_class;
 
     if (errp == &error_abort) {
-        error_report("%s", error_get_pretty(err));
+        error_report_err(err);
         abort();
     }
 
@@ -145,11 +142,6 @@ Error *error_copy(const Error *err)
     return err_new;
 }
 
-bool error_is_set(Error **errp)
-{
-    return (errp && *errp);
-}
-
 ErrorClass error_get_class(const Error *err)
 {
     return err->err_class;
@@ -160,6 +152,12 @@ const char *error_get_pretty(Error *err)
     return err->msg;
 }
 
+void error_report_err(Error *err)
+{
+    error_report("%s", error_get_pretty(err));
+    error_free(err);
+}
+
 void error_free(Error *err)
 {
     if (err) {
@@ -168,13 +166,13 @@ void error_free(Error *err)
     }
 }
 
-void error_propagate(Error **dst_err, Error *local_err)
+void error_propagate(Error **dst_errp, Error *local_err)
 {
-    if (local_err && dst_err == &error_abort) {
-        error_report("%s", error_get_pretty(local_err));
+    if (local_err && dst_errp == &error_abort) {
+        error_report_err(local_err);
         abort();
-    } else if (dst_err && !*dst_err) {
-        *dst_err = local_err;
+    } else if (dst_errp && !*dst_errp) {
+        *dst_errp = local_err;
     } else if (local_err) {
         error_free(local_err);
     }

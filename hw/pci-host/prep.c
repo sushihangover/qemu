@@ -145,9 +145,9 @@ static uint64_t raven_io_read(void *opaque, hwaddr addr,
     if (size == 1) {
         return buf[0];
     } else if (size == 2) {
-        return lduw_p(buf);
+        return lduw_le_p(buf);
     } else if (size == 4) {
-        return ldl_p(buf);
+        return ldl_le_p(buf);
     } else {
         g_assert_not_reached();
     }
@@ -164,9 +164,9 @@ static void raven_io_write(void *opaque, hwaddr addr,
     if (size == 1) {
         buf[0] = val;
     } else if (size == 2) {
-        stw_p(buf, val);
+        stw_le_p(buf, val);
     } else if (size == 4) {
-        stl_p(buf, val);
+        stl_le_p(buf, val);
     } else {
         g_assert_not_reached();
     }
@@ -256,9 +256,7 @@ static void raven_pcihost_initfn(Object *obj)
     memory_region_init(&s->pci_io, obj, "pci-io", 0x3f800000);
     memory_region_init_io(&s->pci_io_non_contiguous, obj, &raven_io_ops, s,
                           "pci-io-non-contiguous", 0x00800000);
-    /* Open Hack'Ware hack: real size should be only 0x3f000000 bytes */
-    memory_region_init(&s->pci_memory, obj, "pci-memory",
-                       0x3f000000 + 0xc0000000ULL);
+    memory_region_init(&s->pci_memory, obj, "pci-memory", 0x3f000000);
     address_space_init(&s->pci_io_as, &s->pci_io, "raven-io");
 
     /* CPU address space */
@@ -291,7 +289,7 @@ static void raven_pcihost_initfn(Object *obj)
     qdev_prop_set_bit(pci_dev, "multifunction", false);
 }
 
-static int raven_init(PCIDevice *d)
+static void raven_realize(PCIDevice *d, Error **errp)
 {
     RavenPCIState *s = RAVEN_PCI_DEVICE(d);
     char *filename;
@@ -301,7 +299,8 @@ static int raven_init(PCIDevice *d)
     d->config[0x0D] = 0x10; // latency_timer
     d->config[0x34] = 0x00; // capabilities_pointer
 
-    memory_region_init_ram(&s->bios, OBJECT(s), "bios", BIOS_SIZE);
+    memory_region_init_ram(&s->bios, OBJECT(s), "bios", BIOS_SIZE,
+                           &error_abort);
     memory_region_set_readonly(&s->bios, true);
     memory_region_add_subregion(get_system_memory(), (uint32_t)(-BIOS_SIZE),
                                 &s->bios);
@@ -331,8 +330,6 @@ static int raven_init(PCIDevice *d)
             g_free(filename);
         }
     }
-
-    return 0;
 }
 
 static const VMStateDescription vmstate_raven = {
@@ -350,7 +347,7 @@ static void raven_class_init(ObjectClass *klass, void *data)
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    k->init = raven_init;
+    k->realize = raven_realize;
     k->vendor_id = PCI_VENDOR_ID_MOTOROLA;
     k->device_id = PCI_DEVICE_ID_MOTOROLA_RAVEN;
     k->revision = 0x00;

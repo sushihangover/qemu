@@ -17,7 +17,8 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 #include "cpu.h"
-#include "helper.h"
+#include "exec/helper-proto.h"
+#include "exec/cpu_ldst.h"
 
 #include "helper_regs.h"
 
@@ -47,7 +48,7 @@ void ppc_cpu_do_interrupt(CPUState *cs)
     env->error_code = 0;
 }
 
-void ppc_hw_interrupt(CPUPPCState *env)
+static void ppc_hw_interrupt(CPUPPCState *env)
 {
     CPUState *cs = CPU(ppc_env_get_cpu(env));
 
@@ -398,6 +399,11 @@ static inline void powerpc_excp(PowerPCCPU *cpu, int excp_model, int excp)
             new_msr |= (target_ulong)MSR_HVB;
         }
         goto store_current;
+    case POWERPC_EXCP_FU:         /* Facility unavailable exception          */
+        if (lpes1 == 0) {
+            new_msr |= (target_ulong)MSR_HVB;
+        }
+        goto store_current;
     case POWERPC_EXCP_PIT:       /* Programmable interval timer interrupt    */
         LOG_EXCP("PIT exception\n");
         goto store_next;
@@ -614,8 +620,11 @@ static inline void powerpc_excp(PowerPCCPU *cpu, int excp_model, int excp)
     if (asrr1 != -1) {
         env->spr[asrr1] = env->spr[srr1];
     }
-    /* If we disactivated any translation, flush TLBs */
-    if (msr & ((1 << MSR_IR) | (1 << MSR_DR))) {
+
+    if (env->spr[SPR_LPCR] & LPCR_AIL) {
+        new_msr |= (1 << MSR_IR) | (1 << MSR_DR);
+    } else if (msr & ((1 << MSR_IR) | (1 << MSR_DR))) {
+        /* If we disactivated any translation, flush TLBs */
         tlb_flush(cs, 1);
     }
 
@@ -683,7 +692,7 @@ void ppc_cpu_do_interrupt(CPUState *cs)
     powerpc_excp(cpu, env->excp_model, cs->exception_index);
 }
 
-void ppc_hw_interrupt(CPUPPCState *env)
+static void ppc_hw_interrupt(CPUPPCState *env)
 {
     PowerPCCPU *cpu = ppc_env_get_cpu(env);
     int hdice;
@@ -723,7 +732,6 @@ void ppc_hw_interrupt(CPUPPCState *env)
     if ((msr_ee != 0 || msr_hv == 0 || msr_pr != 0) && hdice != 0) {
         /* Hypervisor decrementer exception */
         if (env->pending_interrupts & (1 << PPC_INTERRUPT_HDECR)) {
-            env->pending_interrupts &= ~(1 << PPC_INTERRUPT_HDECR);
             powerpc_excp(cpu, env->excp_model, POWERPC_EXCP_HDECR);
             return;
         }
@@ -767,7 +775,9 @@ void ppc_hw_interrupt(CPUPPCState *env)
         }
         /* Decrementer exception */
         if (env->pending_interrupts & (1 << PPC_INTERRUPT_DECR)) {
-            env->pending_interrupts &= ~(1 << PPC_INTERRUPT_DECR);
+            if (ppc_decr_clear_on_delivery(env)) {
+                env->pending_interrupts &= ~(1 << PPC_INTERRUPT_DECR);
+            }
             powerpc_excp(cpu, env->excp_model, POWERPC_EXCP_DECR);
             return;
         }
@@ -800,7 +810,30 @@ void ppc_hw_interrupt(CPUPPCState *env)
         }
     }
 }
+
+void ppc_cpu_do_system_reset(CPUState *cs)
+{
+    PowerPCCPU *cpu = POWERPC_CPU(cs);
+    CPUPPCState *env = &cpu->env;
+
+    powerpc_excp(cpu, env->excp_model, POWERPC_EXCP_RESET);
+}
 #endif /* !CONFIG_USER_ONLY */
+
+bool ppc_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
+{
+    PowerPCCPU *cpu = POWERPC_CPU(cs);
+    CPUPPCState *env = &cpu->env;
+
+    if (interrupt_request & CPU_INTERRUPT_HARD) {
+        ppc_hw_interrupt(env);
+        if (env->pending_interrupts == 0) {
+            cs->interrupt_request &= ~CPU_INTERRUPT_HARD;
+        }
+        return true;
+    }
+    return false;
+}
 
 #if defined(DEBUG_OP)
 static void cpu_dump_rfi(target_ulong RA, target_ulong msr)

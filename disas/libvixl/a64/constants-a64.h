@@ -31,12 +31,6 @@ namespace vixl {
 
 const unsigned kNumberOfRegisters = 32;
 const unsigned kNumberOfFPRegisters = 32;
-// Callee saved registers are x21-x30(lr).
-const int kNumberOfCalleeSavedRegisters = 10;
-const int kFirstCalleeSavedRegisterIndex = 21;
-// Callee saved FP registers are d8-d15.
-const int kNumberOfCalleeSavedFPRegisters = 8;
-const int kFirstCalleeSavedFPRegisterIndex = 8;
 
 #define REGISTER_CODE_LIST(R)                                                  \
 R(0)  R(1)  R(2)  R(3)  R(4)  R(5)  R(6)  R(7)                                 \
@@ -46,14 +40,13 @@ R(24) R(25) R(26) R(27) R(28) R(29) R(30) R(31)
 
 #define INSTRUCTION_FIELDS_LIST(V_)                                            \
 /* Register fields */                                                          \
-V_(Rd, 4, 0, Bits)                        /* Destination register.     */      \
-V_(Rn, 9, 5, Bits)                        /* First source register.    */      \
-V_(Rm, 20, 16, Bits)                      /* Second source register.   */      \
-V_(Ra, 14, 10, Bits)                      /* Third source register.    */      \
-V_(Rt, 4, 0, Bits)                        /* Load dest / store source. */      \
-V_(Rt2, 14, 10, Bits)                     /* Load second dest /        */      \
-                                         /* store second source.      */       \
-V_(PrefetchMode, 4, 0, Bits)                                                   \
+V_(Rd, 4, 0, Bits)                        /* Destination register.        */   \
+V_(Rn, 9, 5, Bits)                        /* First source register.       */   \
+V_(Rm, 20, 16, Bits)                      /* Second source register.      */   \
+V_(Ra, 14, 10, Bits)                      /* Third source register.       */   \
+V_(Rt, 4, 0, Bits)                        /* Load/store register.         */   \
+V_(Rt2, 14, 10, Bits)                     /* Load/store second register.  */   \
+V_(Rs, 20, 16, Bits)                      /* Exclusive access status.     */   \
                                                                                \
 /* Common bits */                                                              \
 V_(SixtyFourBits, 31, 31, Bits)                                                \
@@ -109,6 +102,10 @@ V_(ImmLSUnsigned, 21, 10, Bits)                                                \
 V_(ImmLSPair, 21, 15, SignedBits)                                              \
 V_(SizeLS, 31, 30, Bits)                                                       \
 V_(ImmShiftLS, 12, 12, Bits)                                                   \
+V_(ImmPrefetchOperation, 4, 0, Bits)                                           \
+V_(PrefetchHint, 4, 3, Bits)                                                   \
+V_(PrefetchTarget, 2, 1, Bits)                                                 \
+V_(PrefetchStream, 0, 0, Bits)                                                 \
                                                                                \
 /* Other immediates */                                                         \
 V_(ImmUncondBranch, 25, 0, SignedBits)                                         \
@@ -116,6 +113,8 @@ V_(ImmCmpBranch, 23, 5, SignedBits)                                            \
 V_(ImmLLiteral, 23, 5, SignedBits)                                             \
 V_(ImmException, 20, 5, Bits)                                                  \
 V_(ImmHint, 11, 5, Bits)                                                       \
+V_(ImmBarrierDomain, 11, 10, Bits)                                             \
+V_(ImmBarrierType, 9, 8, Bits)                                                 \
                                                                                \
 /* System (MRS, MSR) */                                                        \
 V_(ImmSystemRegister, 19, 5, Bits)                                             \
@@ -124,6 +123,13 @@ V_(SysOp1, 18, 16, Bits)                                                       \
 V_(SysOp2, 7, 5, Bits)                                                         \
 V_(CRn, 15, 12, Bits)                                                          \
 V_(CRm, 11, 8, Bits)                                                           \
+                                                                               \
+/* Load-/store-exclusive */                                                    \
+V_(LdStXLoad, 22, 22, Bits)                                                    \
+V_(LdStXNotExclusive, 23, 23, Bits)                                            \
+V_(LdStXAcquireRelease, 15, 15, Bits)                                          \
+V_(LdStXSizeLog2, 31, 30, Bits)                                                \
+V_(LdStXPair, 21, 21, Bits)                                                    \
 
 
 #define SYSTEM_REGISTER_FIELDS_LIST(V_, M_)                                    \
@@ -181,7 +187,7 @@ enum Condition {
 inline Condition InvertCondition(Condition cond) {
   // Conditions al and nv behave identically, as "always true". They can't be
   // inverted, because there is no "always false" condition.
-  ASSERT((cond != al) && (cond != nv));
+  VIXL_ASSERT((cond != al) && (cond != nv));
   return static_cast<Condition>(cond ^ 1);
 }
 
@@ -246,6 +252,43 @@ enum SystemHint {
   SEVL  = 5
 };
 
+enum BarrierDomain {
+  OuterShareable = 0,
+  NonShareable   = 1,
+  InnerShareable = 2,
+  FullSystem     = 3
+};
+
+enum BarrierType {
+  BarrierOther  = 0,
+  BarrierReads  = 1,
+  BarrierWrites = 2,
+  BarrierAll    = 3
+};
+
+enum PrefetchOperation {
+  PLDL1KEEP = 0x00,
+  PLDL1STRM = 0x01,
+  PLDL2KEEP = 0x02,
+  PLDL2STRM = 0x03,
+  PLDL3KEEP = 0x04,
+  PLDL3STRM = 0x05,
+
+  PLIL1KEEP = 0x08,
+  PLIL1STRM = 0x09,
+  PLIL2KEEP = 0x0a,
+  PLIL2STRM = 0x0b,
+  PLIL3KEEP = 0x0c,
+  PLIL3STRM = 0x0d,
+
+  PSTL1KEEP = 0x10,
+  PSTL1STRM = 0x11,
+  PSTL2KEEP = 0x12,
+  PSTL2STRM = 0x13,
+  PSTL3KEEP = 0x14,
+  PSTL3STRM = 0x15
+};
+
 // System/special register names.
 // This information is not encoded as one field but as the concatenation of
 // multiple fields (Op0<0>, Op1, Crn, Crm, Op2).
@@ -274,7 +317,7 @@ enum SystemRegister {
 //
 // The enumerations can be used like this:
 //
-// ASSERT(instr->Mask(PCRelAddressingFMask) == PCRelAddressingFixed);
+// VIXL_ASSERT(instr->Mask(PCRelAddressingFMask) == PCRelAddressingFixed);
 // switch(instr->Mask(PCRelAddressingMask)) {
 //   case ADR:  Format("adr 'Xd, 'AddrPCRelByte"); break;
 //   case ADRP: Format("adrp 'Xd, 'AddrPCRelPage"); break;
@@ -560,10 +603,32 @@ enum ExceptionOp {
   DCPS3          = ExceptionFixed | 0x00A00003
 };
 
+enum MemBarrierOp {
+  MemBarrierFixed = 0xD503309F,
+  MemBarrierFMask = 0xFFFFF09F,
+  MemBarrierMask  = 0xFFFFF0FF,
+  DSB             = MemBarrierFixed | 0x00000000,
+  DMB             = MemBarrierFixed | 0x00000020,
+  ISB             = MemBarrierFixed | 0x00000040
+};
+
+enum SystemExclusiveMonitorOp {
+  SystemExclusiveMonitorFixed = 0xD503305F,
+  SystemExclusiveMonitorFMask = 0xFFFFF0FF,
+  SystemExclusiveMonitorMask  = 0xFFFFF0FF,
+  CLREX                       = SystemExclusiveMonitorFixed
+};
+
 // Any load or store.
 enum LoadStoreAnyOp {
   LoadStoreAnyFMask = 0x0a000000,
   LoadStoreAnyFixed = 0x08000000
+};
+
+// Any load pair or store pair.
+enum LoadStorePairAnyOp {
+  LoadStorePairAnyFMask = 0x3a000000,
+  LoadStorePairAnyFixed = 0x28000000
 };
 
 #define LOAD_STORE_PAIR_OP_LIST(V)  \
@@ -664,25 +729,26 @@ enum LoadLiteralOp {
   V(LD, R, d,   0xC4400000)
 
 
-// Load/store unscaled offset.
-enum LoadStoreUnscaledOffsetOp {
-  LoadStoreUnscaledOffsetFixed = 0x38000000,
-  LoadStoreUnscaledOffsetFMask = 0x3B200C00,
-  LoadStoreUnscaledOffsetMask  = 0xFFE00C00,
-  #define LOAD_STORE_UNSCALED(A, B, C, D)  \
-  A##U##B##_##C = LoadStoreUnscaledOffsetFixed | D
-  LOAD_STORE_OP_LIST(LOAD_STORE_UNSCALED)
-  #undef LOAD_STORE_UNSCALED
-};
-
 // Load/store (post, pre, offset and unsigned.)
 enum LoadStoreOp {
-  LoadStoreOpMask   = 0xC4C00000,
+  LoadStoreOpMask = 0xC4C00000,
   #define LOAD_STORE(A, B, C, D)  \
   A##B##_##C = D
   LOAD_STORE_OP_LIST(LOAD_STORE),
   #undef LOAD_STORE
   PRFM = 0xC0800000
+};
+
+// Load/store unscaled offset.
+enum LoadStoreUnscaledOffsetOp {
+  LoadStoreUnscaledOffsetFixed = 0x38000000,
+  LoadStoreUnscaledOffsetFMask = 0x3B200C00,
+  LoadStoreUnscaledOffsetMask  = 0xFFE00C00,
+  PRFUM                        = LoadStoreUnscaledOffsetFixed | PRFM,
+  #define LOAD_STORE_UNSCALED(A, B, C, D)  \
+  A##U##B##_##C = LoadStoreUnscaledOffsetFixed | D
+  LOAD_STORE_OP_LIST(LOAD_STORE_UNSCALED)
+  #undef LOAD_STORE_UNSCALED
 };
 
 // Load/store post index.
@@ -729,6 +795,44 @@ enum LoadStoreRegisterOffset {
   A##B##_##C##_reg = LoadStoreRegisterOffsetFixed | D
   LOAD_STORE_OP_LIST(LOAD_STORE_REGISTER_OFFSET)
   #undef LOAD_STORE_REGISTER_OFFSET
+};
+
+enum LoadStoreExclusive {
+  LoadStoreExclusiveFixed = 0x08000000,
+  LoadStoreExclusiveFMask = 0x3F000000,
+  LoadStoreExclusiveMask  = 0xFFE08000,
+  STXRB_w  = LoadStoreExclusiveFixed | 0x00000000,
+  STXRH_w  = LoadStoreExclusiveFixed | 0x40000000,
+  STXR_w   = LoadStoreExclusiveFixed | 0x80000000,
+  STXR_x   = LoadStoreExclusiveFixed | 0xC0000000,
+  LDXRB_w  = LoadStoreExclusiveFixed | 0x00400000,
+  LDXRH_w  = LoadStoreExclusiveFixed | 0x40400000,
+  LDXR_w   = LoadStoreExclusiveFixed | 0x80400000,
+  LDXR_x   = LoadStoreExclusiveFixed | 0xC0400000,
+  STXP_w   = LoadStoreExclusiveFixed | 0x80200000,
+  STXP_x   = LoadStoreExclusiveFixed | 0xC0200000,
+  LDXP_w   = LoadStoreExclusiveFixed | 0x80600000,
+  LDXP_x   = LoadStoreExclusiveFixed | 0xC0600000,
+  STLXRB_w = LoadStoreExclusiveFixed | 0x00008000,
+  STLXRH_w = LoadStoreExclusiveFixed | 0x40008000,
+  STLXR_w  = LoadStoreExclusiveFixed | 0x80008000,
+  STLXR_x  = LoadStoreExclusiveFixed | 0xC0008000,
+  LDAXRB_w = LoadStoreExclusiveFixed | 0x00408000,
+  LDAXRH_w = LoadStoreExclusiveFixed | 0x40408000,
+  LDAXR_w  = LoadStoreExclusiveFixed | 0x80408000,
+  LDAXR_x  = LoadStoreExclusiveFixed | 0xC0408000,
+  STLXP_w  = LoadStoreExclusiveFixed | 0x80208000,
+  STLXP_x  = LoadStoreExclusiveFixed | 0xC0208000,
+  LDAXP_w  = LoadStoreExclusiveFixed | 0x80608000,
+  LDAXP_x  = LoadStoreExclusiveFixed | 0xC0608000,
+  STLRB_w  = LoadStoreExclusiveFixed | 0x00808000,
+  STLRH_w  = LoadStoreExclusiveFixed | 0x40808000,
+  STLR_w   = LoadStoreExclusiveFixed | 0x80808000,
+  STLR_x   = LoadStoreExclusiveFixed | 0xC0808000,
+  LDARB_w  = LoadStoreExclusiveFixed | 0x00C08000,
+  LDARH_w  = LoadStoreExclusiveFixed | 0x40C08000,
+  LDAR_w   = LoadStoreExclusiveFixed | 0x80C08000,
+  LDAR_x   = LoadStoreExclusiveFixed | 0xC0C08000
 };
 
 // Conditional compare.
@@ -927,17 +1031,22 @@ enum FPDataProcessing1SourceOp {
   FRINTN   = FRINTN_s,
   FRINTP_s = FPDataProcessing1SourceFixed | 0x00048000,
   FRINTP_d = FPDataProcessing1SourceFixed | FP64 | 0x00048000,
+  FRINTP   = FRINTP_s,
   FRINTM_s = FPDataProcessing1SourceFixed | 0x00050000,
   FRINTM_d = FPDataProcessing1SourceFixed | FP64 | 0x00050000,
+  FRINTM   = FRINTM_s,
   FRINTZ_s = FPDataProcessing1SourceFixed | 0x00058000,
   FRINTZ_d = FPDataProcessing1SourceFixed | FP64 | 0x00058000,
   FRINTZ   = FRINTZ_s,
   FRINTA_s = FPDataProcessing1SourceFixed | 0x00060000,
   FRINTA_d = FPDataProcessing1SourceFixed | FP64 | 0x00060000,
+  FRINTA   = FRINTA_s,
   FRINTX_s = FPDataProcessing1SourceFixed | 0x00070000,
   FRINTX_d = FPDataProcessing1SourceFixed | FP64 | 0x00070000,
+  FRINTX   = FRINTX_s,
   FRINTI_s = FPDataProcessing1SourceFixed | 0x00078000,
-  FRINTI_d = FPDataProcessing1SourceFixed | FP64 | 0x00078000
+  FRINTI_d = FPDataProcessing1SourceFixed | FP64 | 0x00078000,
+  FRINTI   = FRINTI_s
 };
 
 // Floating point data processing 2 source.

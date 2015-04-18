@@ -17,7 +17,8 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 #include "cpu.h"
-#include "helper.h"
+#include "exec/helper-proto.h"
+#include "exec/cpu_ldst.h"
 
 #if defined(CONFIG_USER_ONLY)
 
@@ -26,29 +27,13 @@ void m68k_cpu_do_interrupt(CPUState *cs)
     cs->exception_index = -1;
 }
 
-void do_interrupt_m68k_hardirq(CPUM68KState *env)
+static inline void do_interrupt_m68k_hardirq(CPUM68KState *env)
 {
 }
 
 #else
 
 extern int semihosting_enabled;
-
-#include "exec/softmmu_exec.h"
-
-#define MMUSUFFIX _mmu
-
-#define SHIFT 0
-#include "exec/softmmu_template.h"
-
-#define SHIFT 1
-#include "exec/softmmu_template.h"
-
-#define SHIFT 2
-#include "exec/softmmu_template.h"
-
-#define SHIFT 3
-#include "exec/softmmu_template.h"
 
 /* Try to fill the TLB and return an exception if error. If retaddr is
    NULL, it means that the function was called in C code (i.e. not
@@ -156,11 +141,29 @@ void m68k_cpu_do_interrupt(CPUState *cs)
     do_interrupt_all(env, 0);
 }
 
-void do_interrupt_m68k_hardirq(CPUM68KState *env)
+static inline void do_interrupt_m68k_hardirq(CPUM68KState *env)
 {
     do_interrupt_all(env, 1);
 }
 #endif
+
+bool m68k_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
+{
+    M68kCPU *cpu = M68K_CPU(cs);
+    CPUM68KState *env = &cpu->env;
+
+    if (interrupt_request & CPU_INTERRUPT_HARD
+        && ((env->sr & SR_I) >> SR_I_SHIFT) < env->pending_level) {
+        /* Real hardware gets the interrupt vector via an IACK cycle
+           at this point.  Current emulated hardware doesn't rely on
+           this, so we provide/save the vector when the interrupt is
+           first signalled.  */
+        cs->exception_index = env->pending_vector;
+        do_interrupt_m68k_hardirq(env);
+        return true;
+    }
+    return false;
+}
 
 static void raise_exception(CPUM68KState *env, int tt)
 {

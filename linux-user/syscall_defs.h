@@ -121,6 +121,16 @@ struct target_sockaddr {
     uint8_t sa_data[14];
 };
 
+struct target_sockaddr_ll {
+    uint16_t sll_family;   /* Always AF_PACKET */
+    uint16_t sll_protocol; /* Physical layer protocol */
+    int      sll_ifindex;  /* Interface number */
+    uint16_t sll_hatype;   /* ARP hardware type */
+    uint8_t  sll_pkttype;  /* Packet type */
+    uint8_t  sll_halen;    /* Length of address */
+    uint8_t  sll_addr[8];  /* Physical layer address */
+};
+
 struct target_sock_filter {
     abi_ushort code;
     uint8_t jt;
@@ -163,6 +173,11 @@ struct target_timeval {
 struct target_timespec {
     abi_long tv_sec;
     abi_long tv_nsec;
+};
+
+struct target_timezone {
+    abi_int tz_minuteswest;
+    abi_int tz_dsttime;
 };
 
 struct target_itimerval {
@@ -640,7 +655,14 @@ typedef struct {
 #endif
 
 #define TARGET_SI_MAX_SIZE	128
-#define TARGET_SI_PAD_SIZE	((TARGET_SI_MAX_SIZE/sizeof(int)) - 3)
+
+#if TARGET_ABI_BITS == 32
+#define TARGET_SI_PREAMBLE_SIZE (3 * sizeof(int))
+#else
+#define TARGET_SI_PREAMBLE_SIZE (4 * sizeof(int))
+#endif
+
+#define TARGET_SI_PAD_SIZE ((TARGET_SI_MAX_SIZE - TARGET_SI_PREAMBLE_SIZE) / sizeof(int))
 
 typedef struct target_siginfo {
 #ifdef TARGET_MIPS
@@ -826,6 +848,7 @@ struct target_pollfd {
 #define TARGET_KDSKBLED        0x4B65	/* set led flags (not lights) */
 #define TARGET_KDGETLED        0x4B31	/* return current led state */
 #define TARGET_KDSETLED        0x4B32	/* set led state [lights, not flags] */
+#define TARGET_KDSIGACCEPT     0x4B4E
 
 #define TARGET_SIOCATMARK      0x8905
 
@@ -859,6 +882,7 @@ struct target_pollfd {
 #define TARGET_SIOCSIFSLAVE    0x8930
 #define TARGET_SIOCADDMULTI    0x8931          /* Multicast address lists      */
 #define TARGET_SIOCDELMULTI    0x8932
+#define TARGET_SIOCGIFINDEX    0x8933
 
 /* Bridging control calls */
 #define TARGET_SIOCGIFBR       0x8940          /* Bridging support             */
@@ -1583,73 +1607,25 @@ struct target_stat {
 #elif defined(TARGET_ABI_MIPSN32)
 
 struct target_stat {
-	unsigned	st_dev;
-	int		st_pad1[3];		/* Reserved for network id */
-	unsigned int	st_ino;
-	unsigned int	st_mode;
-	unsigned int	st_nlink;
-	int		st_uid;
-	int		st_gid;
-	unsigned 	st_rdev;
-	unsigned int	st_pad2[2];
-	unsigned int	st_size;
-	unsigned int	st_pad3;
-	/*
-	 * Actually this should be timestruc_t st_atime, st_mtime and st_ctime
-	 * but we don't have it under Linux.
-	 */
-	unsigned int		target_st_atime;
-	unsigned int		target_st_atime_nsec;
-	unsigned int		target_st_mtime;
-	unsigned int		target_st_mtime_nsec;
-	unsigned int		target_st_ctime;
-	unsigned int		target_st_ctime_nsec;
-	unsigned int		st_blksize;
-	unsigned int		st_blocks;
-	unsigned int		st_pad4[14];
-};
-
-/*
- * This matches struct stat64 in glibc2.1, hence the absolutely insane
- * amounts of padding around dev_t's.  The memory layout is the same as of
- * struct stat of the 64-bit kernel.
- */
-
-#define TARGET_HAS_STRUCT_STAT64
-struct target_stat64 {
-	unsigned int	st_dev;
-	unsigned int	st_pad0[3];	/* Reserved for st_dev expansion  */
-
-	target_ulong	st_ino;
-
-        unsigned int	st_mode;
-        unsigned int	st_nlink;
-
-	int		st_uid;
-	int		st_gid;
-
-	unsigned int	st_rdev;
-	unsigned int	st_pad1[3];	/* Reserved for st_rdev expansion  */
-
-	int		st_size;
-
-	/*
-	 * Actually this should be timestruc_t st_atime, st_mtime and st_ctime
-	 * but we don't have it under Linux.
-	 */
-	int		target_st_atime;
-	unsigned int	target_st_atime_nsec;	/* Reserved for st_atime expansion  */
-
-	int		target_st_mtime;
-	unsigned int	target_st_mtime_nsec;	/* Reserved for st_mtime expansion  */
-
-	int		target_st_ctime;
-	unsigned int	target_st_ctime_nsec;	/* Reserved for st_ctime expansion  */
-
-	unsigned int	st_blksize;
-	unsigned int	st_pad2;
-
-	int		st_blocks;
+        abi_ulong    st_dev;
+        abi_ulong    st_pad0[3]; /* Reserved for st_dev expansion */
+        uint64_t     st_ino;
+        unsigned int st_mode;
+        unsigned int st_nlink;
+        int          st_uid;
+        int          st_gid;
+        abi_ulong    st_rdev;
+        abi_ulong    st_pad1[3]; /* Reserved for st_rdev expansion */
+        int64_t      st_size;
+        abi_long     target_st_atime;
+        abi_ulong    target_st_atime_nsec; /* Reserved for st_atime expansion */
+        abi_long     target_st_mtime;
+        abi_ulong    target_st_mtime_nsec; /* Reserved for st_mtime expansion */
+        abi_long     target_st_ctime;
+        abi_ulong    target_st_ctime_nsec; /* Reserved for st_ctime expansion */
+        abi_ulong    st_blksize;
+        abi_ulong    st_pad2;
+        int64_t      st_blocks;
 };
 
 #elif defined(TARGET_ABI_MIPSO32)
@@ -2528,7 +2504,7 @@ typedef union target_epoll_data {
 
 struct target_epoll_event {
     uint32_t events;
-#ifdef TARGET_ARM
+#if defined(TARGET_ARM) || defined(TARGET_MIPS) || defined(TARGET_MIPS64)
     uint32_t __pad;
 #endif
     target_epoll_data_t data;
@@ -2547,17 +2523,28 @@ struct target_ucred {
 
 #endif
 
+typedef int32_t target_timer_t;
 
-struct target_timer_t {
-    abi_ulong ptr;
-};
+#define TARGET_SIGEV_MAX_SIZE 64
+
+/* This is architecture-specific but most architectures use the default */
+#ifdef TARGET_MIPS
+#define TARGET_SIGEV_PREAMBLE_SIZE (sizeof(int32_t) * 2 + sizeof(abi_long))
+#else
+#define TARGET_SIGEV_PREAMBLE_SIZE (sizeof(int32_t) * 2 \
+                                    + sizeof(target_sigval_t))
+#endif
+
+#define TARGET_SIGEV_PAD_SIZE ((TARGET_SIGEV_MAX_SIZE \
+                                - TARGET_SIGEV_PREAMBLE_SIZE) \
+                               / sizeof(int32_t))
 
 struct target_sigevent {
     target_sigval_t sigev_value;
     int32_t sigev_signo;
     int32_t sigev_notify;
     union {
-        int32_t _pad[ARRAY_SIZE(((struct sigevent *)0)->_sigev_un._pad)];
+        int32_t _pad[TARGET_SIGEV_PAD_SIZE];
         int32_t _tid;
 
         struct {

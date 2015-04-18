@@ -24,6 +24,7 @@
 #ifndef BLOCK_INT_H
 #define BLOCK_INT_H
 
+#include "block/accounting.h"
 #include "block/block.h"
 #include "qemu/option.h"
 #include "qemu/queue.h"
@@ -54,6 +55,11 @@
 #define BLOCK_OPT_LAZY_REFCOUNTS    "lazy_refcounts"
 #define BLOCK_OPT_ADAPTER_TYPE      "adapter_type"
 #define BLOCK_OPT_REDUNDANCY        "redundancy"
+#define BLOCK_OPT_NOCOW             "nocow"
+#define BLOCK_OPT_OBJECT_SIZE       "object_size"
+#define BLOCK_OPT_REFCOUNT_BITS     "refcount_bits"
+
+#define BLOCK_PROBE_BUF_SIZE        512
 
 typedef struct BdrvTrackedRequest {
     BlockDriverState *bs;
@@ -100,6 +106,9 @@ struct BlockDriver {
      */
     bool bdrv_needs_filename;
 
+    /* Set if a driver can support backing files */
+    bool supports_backing;
+
     /* For handling image reopen for split or non-split files */
     int (*bdrv_reopen_prepare)(BDRVReopenState *reopen_state,
                                BlockReopenQueue *queue, Error **errp);
@@ -116,22 +125,24 @@ struct BlockDriver {
                       const uint8_t *buf, int nb_sectors);
     void (*bdrv_close)(BlockDriverState *bs);
     void (*bdrv_rebind)(BlockDriverState *bs);
-    int (*bdrv_create)(const char *filename, QEMUOptionParameter *options,
-                       Error **errp);
+    int (*bdrv_create)(const char *filename, QemuOpts *opts, Error **errp);
     int (*bdrv_set_key)(BlockDriverState *bs, const char *key);
     int (*bdrv_make_empty)(BlockDriverState *bs);
+
+    void (*bdrv_refresh_filename)(BlockDriverState *bs);
+
     /* aio */
-    BlockDriverAIOCB *(*bdrv_aio_readv)(BlockDriverState *bs,
+    BlockAIOCB *(*bdrv_aio_readv)(BlockDriverState *bs,
         int64_t sector_num, QEMUIOVector *qiov, int nb_sectors,
-        BlockDriverCompletionFunc *cb, void *opaque);
-    BlockDriverAIOCB *(*bdrv_aio_writev)(BlockDriverState *bs,
+        BlockCompletionFunc *cb, void *opaque);
+    BlockAIOCB *(*bdrv_aio_writev)(BlockDriverState *bs,
         int64_t sector_num, QEMUIOVector *qiov, int nb_sectors,
-        BlockDriverCompletionFunc *cb, void *opaque);
-    BlockDriverAIOCB *(*bdrv_aio_flush)(BlockDriverState *bs,
-        BlockDriverCompletionFunc *cb, void *opaque);
-    BlockDriverAIOCB *(*bdrv_aio_discard)(BlockDriverState *bs,
+        BlockCompletionFunc *cb, void *opaque);
+    BlockAIOCB *(*bdrv_aio_flush)(BlockDriverState *bs,
+        BlockCompletionFunc *cb, void *opaque);
+    BlockAIOCB *(*bdrv_aio_discard)(BlockDriverState *bs,
         int64_t sector_num, int nb_sectors,
-        BlockDriverCompletionFunc *cb, void *opaque);
+        BlockCompletionFunc *cb, void *opaque);
 
     int coroutine_fn (*bdrv_co_readv)(BlockDriverState *bs,
         int64_t sector_num, int nb_sectors, QEMUIOVector *qiov);
@@ -211,13 +222,12 @@ struct BlockDriver {
 
     /* to control generic scsi devices */
     int (*bdrv_ioctl)(BlockDriverState *bs, unsigned long int req, void *buf);
-    BlockDriverAIOCB *(*bdrv_aio_ioctl)(BlockDriverState *bs,
+    BlockAIOCB *(*bdrv_aio_ioctl)(BlockDriverState *bs,
         unsigned long int req, void *buf,
-        BlockDriverCompletionFunc *cb, void *opaque);
+        BlockCompletionFunc *cb, void *opaque);
 
     /* List of options for creating images, terminated by name == NULL */
-    QEMUOptionParameter *create_options;
-
+    QemuOptsList *create_opts;
 
     /*
      * Returns 0 for completed check, -errno for internal errors.
@@ -226,8 +236,8 @@ struct BlockDriver {
     int (*bdrv_check)(BlockDriverState* bs, BdrvCheckResult *result,
         BdrvCheckMode fix);
 
-    int (*bdrv_amend_options)(BlockDriverState *bs,
-        QEMUOptionParameter *options);
+    int (*bdrv_amend_options)(BlockDriverState *bs, QemuOpts *opts,
+                              BlockDriverAmendStatusCB *status_cb);
 
     void (*bdrv_debug_event)(BlockDriverState *bs, BlkDebugEvent event);
 
@@ -239,13 +249,46 @@ struct BlockDriver {
     int (*bdrv_debug_resume)(BlockDriverState *bs, const char *tag);
     bool (*bdrv_debug_is_suspended)(BlockDriverState *bs, const char *tag);
 
-    int (*bdrv_refresh_limits)(BlockDriverState *bs);
+    void (*bdrv_refresh_limits)(BlockDriverState *bs, Error **errp);
 
     /*
      * Returns 1 if newly created images are guaranteed to contain only
      * zeros, 0 otherwise.
      */
     int (*bdrv_has_zero_init)(BlockDriverState *bs);
+
+    /* Remove fd handlers, timers, and other event loop callbacks so the event
+     * loop is no longer in use.  Called with no in-flight requests and in
+     * depth-first traversal order with parents before child nodes.
+     */
+    void (*bdrv_detach_aio_context)(BlockDriverState *bs);
+
+    /* Add fd handlers, timers, and other event loop callbacks so I/O requests
+     * can be processed again.  Called with no in-flight requests and in
+     * depth-first traversal order with child nodes before parent nodes.
+     */
+    void (*bdrv_attach_aio_context)(BlockDriverState *bs,
+                                    AioContext *new_context);
+
+    /* io queue for linux-aio */
+    void (*bdrv_io_plug)(BlockDriverState *bs);
+    void (*bdrv_io_unplug)(BlockDriverState *bs);
+    void (*bdrv_flush_io_queue)(BlockDriverState *bs);
+
+    /**
+     * Try to get @bs's logical and physical block size.
+     * On success, store them in @bsz and return zero.
+     * On failure, return negative errno.
+     */
+    int (*bdrv_probe_blocksizes)(BlockDriverState *bs, BlockSizes *bsz);
+    /**
+     * Try to get @bs's geometry (cyls, heads, sectors)
+     * On success, store them in @geo and return 0.
+     * On failure return -errno.
+     * Only drivers that want to override guest geometry implement this
+     * callback; see hd_geometry_guess().
+     */
+    int (*bdrv_probe_geometry)(BlockDriverState *bs, HDGeometry *geo);
 
     QLIST_ENTRY(BlockDriver) list;
 };
@@ -266,9 +309,23 @@ typedef struct BlockLimits {
     /* optimal transfer length in sectors */
     int opt_transfer_length;
 
+    /* maximal transfer length in sectors */
+    int max_transfer_length;
+
     /* memory alignment so that no bounce buffer is needed */
     size_t opt_mem_alignment;
 } BlockLimits;
+
+typedef struct BdrvOpBlocker BdrvOpBlocker;
+
+typedef struct BdrvAioNotifier {
+    void (*attached_aio_context)(AioContext *new_context, void *opaque);
+    void (*detach_aio_context)(void *opaque);
+
+    void *opaque;
+
+    QLIST_ENTRY(BdrvAioNotifier) list;
+} BdrvAioNotifier;
 
 /*
  * Note: the function bdrv_append() copies and swaps contents of
@@ -286,20 +343,26 @@ struct BlockDriverState {
     int sg;        /* if true, the device is a /dev/sg* */
     int copy_on_read; /* if true, copy read backing sectors into image
                          note this is a reference count */
+    bool probed;
 
     BlockDriver *drv; /* NULL means no media */
     void *opaque;
 
-    void *dev;                  /* attached device model, if any */
-    /* TODO change to DeviceState when all users are qdevified */
-    const BlockDevOps *dev_ops;
-    void *dev_opaque;
+    BlockBackend *blk;          /* owning backend, if any */
 
-    char filename[1024];
-    char backing_file[1024]; /* if non zero, the image is a diff of
-                                this file image */
+    AioContext *aio_context; /* event loop used for fd handlers, timers, etc */
+    /* long-running tasks intended to always use the same AioContext as this
+     * BDS may register themselves in this list to be notified of changes
+     * regarding this BDS's context */
+    QLIST_HEAD(, BdrvAioNotifier) aio_notifiers;
+
+    char filename[PATH_MAX];
+    char backing_file[PATH_MAX]; /* if non zero, the image is a diff of
+                                    this file image */
     char backing_format[16]; /* if non-zero and backing_file exists */
-    int is_temporary;
+
+    QDict *full_open_options;
+    char exact_filename[PATH_MAX];
 
     BlockDriverState *backing_hd;
     BlockDriverState *file;
@@ -318,16 +381,10 @@ struct BlockDriverState {
     bool         io_limits_enabled;
 
     /* I/O stats (display with "info blockstats"). */
-    uint64_t nr_bytes[BDRV_MAX_IOTYPE];
-    uint64_t nr_ops[BDRV_MAX_IOTYPE];
-    uint64_t total_time_ns[BDRV_MAX_IOTYPE];
-    uint64_t wr_highest_sector;
+    BlockAcctStats stats;
 
     /* I/O Limits */
     BlockLimits bl;
-
-    /* Whether the disk can expand beyond total_sectors */
-    int growable;
 
     /* Whether produces zeros when read beyond eof */
     bool zero_beyond_eof;
@@ -351,23 +408,41 @@ struct BlockDriverState {
     char node_name[32];
     /* element of the list of named nodes building the graph */
     QTAILQ_ENTRY(BlockDriverState) node_list;
-    /* Device name is the name associated with the "drive" the guest sees */
-    char device_name[32];
     /* element of the list of "drives" the guest sees */
     QTAILQ_ENTRY(BlockDriverState) device_list;
     QLIST_HEAD(, BdrvDirtyBitmap) dirty_bitmaps;
     int refcnt;
-    int in_use; /* users other than guest access, eg. block migration */
 
     QLIST_HEAD(, BdrvTrackedRequest) tracked_requests;
+
+    /* operation blockers */
+    QLIST_HEAD(, BdrvOpBlocker) op_blockers[BLOCK_OP_TYPE_MAX];
 
     /* long-running background operation */
     BlockJob *job;
 
     QDict *options;
+    BlockdevDetectZeroesOptions detect_zeroes;
+
+    /* The error object in use for blocking operations on backing_hd */
+    Error *backing_blocker;
+
+    /* threshold limit for writes, in bytes. "High water mark". */
+    uint64_t write_threshold_offset;
+    NotifierWithReturn write_threshold_notifier;
 };
 
+
+/* Essential block drivers which must always be statically linked into qemu, and
+ * which therefore can be accessed without using bdrv_find_format() */
+extern BlockDriver bdrv_file;
+extern BlockDriver bdrv_raw;
+extern BlockDriver bdrv_qcow2;
+
+
 int get_tmp_filename(char *filename, int size);
+BlockDriver *bdrv_probe_all(const uint8_t *buf, int buf_size,
+                            const char *filename);
 
 void bdrv_set_io_limits(BlockDriverState *bs,
                         ThrottleConfig *cfg);
@@ -383,18 +458,57 @@ void bdrv_add_before_write_notifier(BlockDriverState *bs,
                                     NotifierWithReturn *notifier);
 
 /**
- * bdrv_get_aio_context:
+ * bdrv_detach_aio_context:
  *
- * Returns: the currently bound #AioContext
+ * May be called from .bdrv_detach_aio_context() to detach children from the
+ * current #AioContext.  This is only needed by block drivers that manage their
+ * own children.  Both ->file and ->backing_hd are automatically handled and
+ * block drivers should not call this function on them explicitly.
  */
-AioContext *bdrv_get_aio_context(BlockDriverState *bs);
+void bdrv_detach_aio_context(BlockDriverState *bs);
+
+/**
+ * bdrv_attach_aio_context:
+ *
+ * May be called from .bdrv_attach_aio_context() to attach children to the new
+ * #AioContext.  This is only needed by block drivers that manage their own
+ * children.  Both ->file and ->backing_hd are automatically handled and block
+ * drivers should not call this function on them explicitly.
+ */
+void bdrv_attach_aio_context(BlockDriverState *bs,
+                             AioContext *new_context);
+
+/**
+ * bdrv_add_aio_context_notifier:
+ *
+ * If a long-running job intends to be always run in the same AioContext as a
+ * certain BDS, it may use this function to be notified of changes regarding the
+ * association of the BDS to an AioContext.
+ *
+ * attached_aio_context() is called after the target BDS has been attached to a
+ * new AioContext; detach_aio_context() is called before the target BDS is being
+ * detached from its old AioContext.
+ */
+void bdrv_add_aio_context_notifier(BlockDriverState *bs,
+        void (*attached_aio_context)(AioContext *new_context, void *opaque),
+        void (*detach_aio_context)(void *opaque), void *opaque);
+
+/**
+ * bdrv_remove_aio_context_notifier:
+ *
+ * Unsubscribe of change notifications regarding the BDS's AioContext. The
+ * parameters given here have to be the same as those given to
+ * bdrv_add_aio_context_notifier().
+ */
+void bdrv_remove_aio_context_notifier(BlockDriverState *bs,
+                                      void (*aio_context_attached)(AioContext *,
+                                                                   void *),
+                                      void (*aio_context_detached)(void *),
+                                      void *opaque);
 
 #ifdef _WIN32
 int is_windows_drive(const char *filename);
 #endif
-void bdrv_emit_qmp_error_event(const BlockDriverState *bdrv,
-                               enum MonitorEvent ev,
-                               BlockErrorAction action, bool is_read);
 
 /**
  * stream_start:
@@ -417,7 +531,7 @@ void bdrv_emit_qmp_error_event(const BlockDriverState *bdrv,
  */
 void stream_start(BlockDriverState *bs, BlockDriverState *base,
                   const char *base_id, int64_t speed, BlockdevOnError on_error,
-                  BlockDriverCompletionFunc *cb,
+                  BlockCompletionFunc *cb,
                   void *opaque, Error **errp);
 
 /**
@@ -429,13 +543,14 @@ void stream_start(BlockDriverState *bs, BlockDriverState *base,
  * @on_error: The action to take upon error.
  * @cb: Completion function for the job.
  * @opaque: Opaque pointer value passed to @cb.
+ * @backing_file_str: String to use as the backing file in @top's overlay
  * @errp: Error object.
  *
  */
 void commit_start(BlockDriverState *bs, BlockDriverState *base,
                  BlockDriverState *top, int64_t speed,
-                 BlockdevOnError on_error, BlockDriverCompletionFunc *cb,
-                 void *opaque, Error **errp);
+                 BlockdevOnError on_error, BlockCompletionFunc *cb,
+                 void *opaque, const char *backing_file_str, Error **errp);
 /**
  * commit_active_start:
  * @bs: Active block device to be committed.
@@ -450,12 +565,14 @@ void commit_start(BlockDriverState *bs, BlockDriverState *base,
 void commit_active_start(BlockDriverState *bs, BlockDriverState *base,
                          int64_t speed,
                          BlockdevOnError on_error,
-                         BlockDriverCompletionFunc *cb,
+                         BlockCompletionFunc *cb,
                          void *opaque, Error **errp);
 /*
  * mirror_start:
  * @bs: Block device to operate on.
  * @target: Block device to write to.
+ * @replaces: Block graph node name to replace once the mirror is done. Can
+ *            only be used when full mirroring is selected.
  * @speed: The maximum speed, in bytes per second, or 0 for unlimited.
  * @granularity: The chosen granularity for the dirty bitmap.
  * @buf_size: The amount of data that can be in flight at one time.
@@ -472,10 +589,11 @@ void commit_active_start(BlockDriverState *bs, BlockDriverState *base,
  * @bs will be switched to read from @target.
  */
 void mirror_start(BlockDriverState *bs, BlockDriverState *target,
+                  const char *replaces,
                   int64_t speed, int64_t granularity, int64_t buf_size,
                   MirrorSyncMode mode, BlockdevOnError on_source_error,
                   BlockdevOnError on_target_error,
-                  BlockDriverCompletionFunc *cb,
+                  BlockCompletionFunc *cb,
                   void *opaque, Error **errp);
 
 /*
@@ -496,7 +614,14 @@ void backup_start(BlockDriverState *bs, BlockDriverState *target,
                   int64_t speed, MirrorSyncMode sync_mode,
                   BlockdevOnError on_source_error,
                   BlockdevOnError on_target_error,
-                  BlockDriverCompletionFunc *cb, void *opaque,
+                  BlockCompletionFunc *cb, void *opaque,
                   Error **errp);
+
+void blk_dev_change_media_cb(BlockBackend *blk, bool load);
+bool blk_dev_has_removable_media(BlockBackend *blk);
+void blk_dev_eject_request(BlockBackend *blk, bool force);
+bool blk_dev_is_tray_open(BlockBackend *blk);
+bool blk_dev_is_medium_locked(BlockBackend *blk);
+void blk_dev_resize_cb(BlockBackend *blk);
 
 #endif /* BLOCK_INT_H */

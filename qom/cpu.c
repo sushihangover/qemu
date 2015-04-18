@@ -71,8 +71,7 @@ CPUState *cpu_generic_init(const char *typename, const char *cpu_model)
 
 out:
     if (err != NULL) {
-        error_report("%s", error_get_pretty(err));
-        error_free(err);
+        error_report_err(err);
         object_unref(OBJECT(cpu));
         return NULL;
     }
@@ -97,7 +96,7 @@ void cpu_get_memory_mapping(CPUState *cpu, MemoryMappingList *list,
 {
     CPUClass *cc = CPU_GET_CLASS(cpu);
 
-    return cc->get_memory_mapping(cpu, list, errp);
+    cc->get_memory_mapping(cpu, list, errp);
 }
 
 static void cpu_common_get_memory_mapping(CPUState *cpu,
@@ -105,15 +104,6 @@ static void cpu_common_get_memory_mapping(CPUState *cpu,
                                           Error **errp)
 {
     error_setg(errp, "Obtaining memory mappings is unsupported on this CPU.");
-}
-
-/* CPU hot-plug notifiers */
-static NotifierList cpu_added_notifiers =
-    NOTIFIER_LIST_INITIALIZER(cpu_add_notifiers);
-
-void qemu_register_cpu_added_notifier(Notifier *notifier)
-{
-    notifier_list_add(&cpu_added_notifiers, notifier);
 }
 
 void cpu_reset_interrupt(CPUState *cpu, int mask)
@@ -196,6 +186,20 @@ static int cpu_common_gdb_write_register(CPUState *cpu, uint8_t *buf, int reg)
     return 0;
 }
 
+bool target_words_bigendian(void);
+static bool cpu_common_virtio_is_big_endian(CPUState *cpu)
+{
+    return target_words_bigendian();
+}
+
+static void cpu_common_noop(CPUState *cpu)
+{
+}
+
+static bool cpu_common_exec_interrupt(CPUState *cpu, int int_req)
+{
+    return false;
+}
 
 void cpu_dump_state(CPUState *cpu, FILE *f, fprintf_function cpu_fprintf,
                     int flags)
@@ -244,6 +248,7 @@ static void cpu_common_reset(CPUState *cpu)
     cpu->icount_extra = 0;
     cpu->icount_decr.u32 = 0;
     cpu->can_do_io = 0;
+    cpu->exception_index = -1;
     memset(cpu->tb_jmp_cache, 0, TB_JMP_CACHE_SIZE * sizeof(void *));
 }
 
@@ -298,7 +303,6 @@ static void cpu_common_realizefn(DeviceState *dev, Error **errp)
 
     if (dev->hotplugged) {
         cpu_synchronize_post_init(cpu);
-        notifier_list_notify(&cpu_added_notifiers, dev);
         cpu_resume(cpu);
     }
 }
@@ -334,6 +338,11 @@ static void cpu_class_init(ObjectClass *klass, void *data)
     k->write_elf64_note = cpu_common_write_elf64_note;
     k->gdb_read_register = cpu_common_gdb_read_register;
     k->gdb_write_register = cpu_common_gdb_write_register;
+    k->virtio_is_big_endian = cpu_common_virtio_is_big_endian;
+    k->debug_excp_handler = cpu_common_noop;
+    k->cpu_exec_enter = cpu_common_noop;
+    k->cpu_exec_exit = cpu_common_noop;
+    k->cpu_exec_interrupt = cpu_common_exec_interrupt;
     dc->realize = cpu_common_realizefn;
     /*
      * Reason: CPUs still need special care by board code: wiring up

@@ -32,7 +32,7 @@
 #include "sysemu/sysemu.h"
 #include "hw/devices.h"
 #include "hw/boards.h"
-#include "sysemu/blockdev.h"
+#include "sysemu/block-backend.h"
 #include "hw/char/serial.h"
 #include "exec/address-spaces.h"
 #include "hw/ssi.h"
@@ -79,9 +79,9 @@ static void machine_cpu_reset(MicroBlazeCPU *cpu)
 }
 
 static void
-petalogix_ml605_init(QEMUMachineInitArgs *args)
+petalogix_ml605_init(MachineState *machine)
 {
-    ram_addr_t ram_size = args->ram_size;
+    ram_addr_t ram_size = machine->ram_size;
     MemoryRegion *address_space_mem = get_system_memory();
     DeviceState *dev, *dma, *eth0;
     Object *ds, *cs;
@@ -89,7 +89,6 @@ petalogix_ml605_init(QEMUMachineInitArgs *args)
     SysBusDevice *busdev;
     DriveInfo *dinfo;
     int i;
-    hwaddr ddr_base = MEMORY_BASEADDR;
     MemoryRegion *phys_lmb_bram = g_new(MemoryRegion, 1);
     MemoryRegion *phys_ram = g_new(MemoryRegion, 1);
     qemu_irq irq[32];
@@ -100,21 +99,22 @@ petalogix_ml605_init(QEMUMachineInitArgs *args)
 
     /* Attach emulated BRAM through the LMB.  */
     memory_region_init_ram(phys_lmb_bram, NULL, "petalogix_ml605.lmb_bram",
-                           LMB_BRAM_SIZE);
+                           LMB_BRAM_SIZE, &error_abort);
     vmstate_register_ram_global(phys_lmb_bram);
     memory_region_add_subregion(address_space_mem, 0x00000000, phys_lmb_bram);
 
-    memory_region_init_ram(phys_ram, NULL, "petalogix_ml605.ram", ram_size);
+    memory_region_init_ram(phys_ram, NULL, "petalogix_ml605.ram", ram_size,
+                           &error_abort);
     vmstate_register_ram_global(phys_ram);
-    memory_region_add_subregion(address_space_mem, ddr_base, phys_ram);
+    memory_region_add_subregion(address_space_mem, MEMORY_BASEADDR, phys_ram);
 
     dinfo = drive_get(IF_PFLASH, 0, 0);
     /* 5th parameter 2 means bank-width
      * 10th paremeter 0 means little-endian */
     pflash_cfi01_register(FLASH_BASEADDR,
                           NULL, "petalogix_ml605.flash", FLASH_SIZE,
-                          dinfo ? dinfo->bdrv : NULL, (64 * 1024),
-                          FLASH_SIZE >> 16,
+                          dinfo ? blk_by_legacy_dinfo(dinfo) : NULL,
+                          (64 * 1024), FLASH_SIZE >> 16,
                           2, 0x89, 0x18, 0x0000, 0x0, 0);
 
 
@@ -196,13 +196,13 @@ petalogix_ml605_init(QEMUMachineInitArgs *args)
             qemu_irq cs_line;
 
             dev = ssi_create_slave(spi, "n25q128");
-            cs_line = qdev_get_gpio_in(dev, 0);
+            cs_line = qdev_get_gpio_in_named(dev, SSI_GPIO_CS, 0);
             sysbus_connect_irq(busdev, i+1, cs_line);
         }
     }
 
-    microblaze_load_kernel(cpu, ddr_base, ram_size,
-                           args->initrd_filename,
+    microblaze_load_kernel(cpu, MEMORY_BASEADDR, ram_size,
+                           machine->initrd_filename,
                            BINARY_DEVICE_TREE_FILE,
                            machine_cpu_reset);
 

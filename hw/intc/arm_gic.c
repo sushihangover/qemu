@@ -66,7 +66,8 @@ void gic_update(GICState *s)
         best_prio = 0x100;
         best_irq = 1023;
         for (irq = 0; irq < s->num_irq; irq++) {
-            if (GIC_TEST_ENABLED(irq, cm) && gic_test_pending(s, irq, cm)) {
+            if (GIC_TEST_ENABLED(irq, cm) && gic_test_pending(s, irq, cm) &&
+                (irq < GIC_INTERNAL || GIC_TARGET(irq) & cm)) {
                 if (GIC_GET_PRIORITY(irq, cpu) < best_prio) {
                     best_prio = GIC_GET_PRIORITY(irq, cpu);
                     best_irq = irq;
@@ -372,7 +373,7 @@ static uint32_t gic_dist_readb(void *opaque, hwaddr offset)
         }
     } else if (offset < 0xf00) {
         /* Interrupt Configuration.  */
-        irq = (offset - 0xc00) * 2 + GIC_BASE_IRQ;
+        irq = (offset - 0xc00) * 4 + GIC_BASE_IRQ;
         if (irq >= s->num_irq)
             goto bad_reg;
         res = 0;
@@ -558,13 +559,15 @@ static void gic_dist_writeb(void *opaque, hwaddr offset,
         irq = (offset - 0xc00) * 4 + GIC_BASE_IRQ;
         if (irq >= s->num_irq)
             goto bad_reg;
-        if (irq < GIC_INTERNAL)
+        if (irq < GIC_NR_SGIS)
             value |= 0xaa;
         for (i = 0; i < 4; i++) {
-            if (value & (1 << (i * 2))) {
-                GIC_SET_MODEL(irq + i);
-            } else {
-                GIC_CLEAR_MODEL(irq + i);
+            if (s->revision == REV_11MPCORE || s->revision == REV_NVIC) {
+                if (value & (1 << (i * 2))) {
+                    GIC_SET_MODEL(irq + i);
+                } else {
+                    GIC_CLEAR_MODEL(irq + i);
+                }
             }
             if (value & (2 << (i * 2))) {
                 GIC_SET_EDGE_TRIGGER(irq + i);
@@ -701,7 +704,8 @@ static void gic_cpu_write(GICState *s, int cpu, int offset, uint32_t value)
         s->bpr[cpu] = (value & 0x7);
         break;
     case 0x10: /* End Of Interrupt */
-        return gic_complete_irq(s, cpu, value & 0x3ff);
+        gic_complete_irq(s, cpu, value & 0x3ff);
+        return;
     case 0x1c: /* Aliased Binary Point */
         if (s->revision >= 2) {
             s->abpr[cpu] = (value & 0x7);
@@ -766,7 +770,7 @@ static const MemoryRegionOps gic_cpu_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
-void gic_init_irqs_and_distributor(GICState *s, int num_irq)
+void gic_init_irqs_and_distributor(GICState *s)
 {
     SysBusDevice *sbd = SYS_BUS_DEVICE(s);
     int i;
@@ -797,13 +801,15 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
     GICState *s = ARM_GIC(dev);
     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
     ARMGICClass *agc = ARM_GIC_GET_CLASS(s);
+    Error *local_err = NULL;
 
-    agc->parent_realize(dev, errp);
-    if (error_is_set(errp)) {
+    agc->parent_realize(dev, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
         return;
     }
 
-    gic_init_irqs_and_distributor(s, s->num_irq);
+    gic_init_irqs_and_distributor(s);
 
     /* Memory regions for the CPU interfaces (NVIC doesn't have these):
      * a region for "CPU interface for this core", then a region for

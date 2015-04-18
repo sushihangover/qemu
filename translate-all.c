@@ -33,6 +33,7 @@
 #include "qemu-common.h"
 #define NO_CPU_IO_DEFS
 #include "cpu.h"
+#include "trace.h"
 #include "disas/disas.h"
 #include "tcg.h"
 #if defined(CONFIG_USER_ONLY)
@@ -143,7 +144,7 @@ void cpu_gen_init(void)
 int cpu_gen_code(CPUArchState *env, TranslationBlock *tb, int *gen_code_size_ptr)
 {
     TCGContext *s = &tcg_ctx;
-    uint8_t *gen_code_buf;
+    tcg_insn_unit *gen_code_buf;
     int gen_code_size;
 #ifdef CONFIG_PROFILER
     int64_t ti;
@@ -157,6 +158,8 @@ int cpu_gen_code(CPUArchState *env, TranslationBlock *tb, int *gen_code_size_ptr
     tcg_func_start(s);
 
     gen_intermediate_code(env, tb);
+
+    trace_translate_block(tb, tb->pc, tb->tc_ptr);
 
     /* generate machine code */
     gen_code_buf = tb->tc_ptr;
@@ -186,8 +189,8 @@ int cpu_gen_code(CPUArchState *env, TranslationBlock *tb, int *gen_code_size_ptr
 
 #ifdef DEBUG_DISAS
     if (qemu_loglevel_mask(CPU_LOG_TB_OUT_ASM)) {
-        qemu_log("OUT: [size=%d]\n", *gen_code_size_ptr);
-        log_disas(tb->tc_ptr, *gen_code_size_ptr);
+        qemu_log("OUT: [size=%d]\n", gen_code_size);
+        log_disas(tb->tc_ptr, gen_code_size);
         qemu_log("\n");
         qemu_log_flush();
     }
@@ -215,7 +218,7 @@ static int cpu_restore_state_from_tb(CPUState *cpu, TranslationBlock *tb,
 
     gen_intermediate_code_pc(env, tb);
 
-    if (use_icount) {
+    if (tb->cflags & CF_USE_ICOUNT) {
         /* Reset the cycle counter to the start of the block.  */
         cpu->icount_decr.u16.low += tb->icount;
         /* Clear the IO flag.  */
@@ -235,7 +238,8 @@ static int cpu_restore_state_from_tb(CPUState *cpu, TranslationBlock *tb,
     s->tb_jmp_offset = NULL;
     s->tb_next = tb->tb_next;
 #endif
-    j = tcg_gen_code_search_pc(s, (uint8_t *)tc_ptr, searched_pc - tc_ptr);
+    j = tcg_gen_code_search_pc(s, (tcg_insn_unit *)tc_ptr,
+                               searched_pc - tc_ptr);
     if (j < 0)
         return -1;
     /* now find start of instruction before */
@@ -260,20 +264,26 @@ bool cpu_restore_state(CPUState *cpu, uintptr_t retaddr)
     tb = tb_find_pc(retaddr);
     if (tb) {
         cpu_restore_state_from_tb(cpu, tb, retaddr);
+        if (tb->cflags & CF_NOCACHE) {
+            /* one-shot translation, invalidate it immediately */
+            cpu->current_tb = NULL;
+            tb_phys_invalidate(tb, -1);
+            tb_free(tb);
+        }
         return true;
     }
     return false;
 }
 
 #ifdef _WIN32
-static inline void map_exec(void *addr, long size)
+static __attribute__((unused)) void map_exec(void *addr, long size)
 {
     DWORD old_protect;
     VirtualProtect(addr, size,
                    PAGE_EXECUTE_READWRITE, &old_protect);
 }
 #else
-static inline void map_exec(void *addr, long size)
+static __attribute__((unused)) void map_exec(void *addr, long size)
 {
     unsigned long start, end, page_size;
 
@@ -294,14 +304,7 @@ void page_size_init(void)
 {
     /* NOTE: we can always suppose that qemu_host_page_size >=
        TARGET_PAGE_SIZE */
-#ifdef _WIN32
-    SYSTEM_INFO system_info;
-
-    GetSystemInfo(&system_info);
-    qemu_real_host_page_size = system_info.dwPageSize;
-#else
     qemu_real_host_page_size = getpagesize();
-#endif
     if (qemu_host_page_size == 0) {
         qemu_host_page_size = qemu_real_host_page_size;
     }
@@ -474,6 +477,10 @@ static inline PageDesc *page_find(tb_page_addr_t index)
 #elif defined(__s390x__)
   /* We have a +- 4GB range on the branches; leave some slop.  */
 # define MAX_CODE_GEN_BUFFER_SIZE  (3ul * 1024 * 1024 * 1024)
+#elif defined(__mips__)
+  /* We have a 256MB branch region, but leave room to make sure the
+     main executable is also within that region.  */
+# define MAX_CODE_GEN_BUFFER_SIZE  (128ul * 1024 * 1024)
 #else
 # define MAX_CODE_GEN_BUFFER_SIZE  ((size_t)-1)
 #endif
@@ -508,14 +515,47 @@ static inline size_t size_code_gen_buffer(size_t tb_size)
     return tb_size;
 }
 
+#ifdef __mips__
+/* In order to use J and JAL within the code_gen_buffer, we require
+   that the buffer not cross a 256MB boundary.  */
+static inline bool cross_256mb(void *addr, size_t size)
+{
+    return ((uintptr_t)addr ^ ((uintptr_t)addr + size)) & 0xf0000000;
+}
+
+/* We weren't able to allocate a buffer without crossing that boundary,
+   so make do with the larger portion of the buffer that doesn't cross.
+   Returns the new base of the buffer, and adjusts code_gen_buffer_size.  */
+static inline void *split_cross_256mb(void *buf1, size_t size1)
+{
+    void *buf2 = (void *)(((uintptr_t)buf1 + size1) & 0xf0000000);
+    size_t size2 = buf1 + size1 - buf2;
+
+    size1 = buf2 - buf1;
+    if (size1 < size2) {
+        size1 = size2;
+        buf1 = buf2;
+    }
+
+    tcg_ctx.code_gen_buffer_size = size1;
+    return buf1;
+}
+#endif
+
 #ifdef USE_STATIC_CODE_GEN_BUFFER
 static uint8_t static_code_gen_buffer[DEFAULT_CODE_GEN_BUFFER_SIZE]
     __attribute__((aligned(CODE_GEN_ALIGN)));
 
 static inline void *alloc_code_gen_buffer(void)
 {
-    map_exec(static_code_gen_buffer, tcg_ctx.code_gen_buffer_size);
-    return static_code_gen_buffer;
+    void *buf = static_code_gen_buffer;
+#ifdef __mips__
+    if (cross_256mb(buf, tcg_ctx.code_gen_buffer_size)) {
+        buf = split_cross_256mb(buf, tcg_ctx.code_gen_buffer_size);
+    }
+#endif
+    map_exec(buf, tcg_ctx.code_gen_buffer_size);
+    return buf;
 }
 #elif defined(USE_MMAP)
 static inline void *alloc_code_gen_buffer(void)
@@ -544,20 +584,76 @@ static inline void *alloc_code_gen_buffer(void)
     start = 0x40000000ul;
 # elif defined(__s390x__)
     start = 0x90000000ul;
+# elif defined(__mips__)
+    /* ??? We ought to more explicitly manage layout for softmmu too.  */
+#  ifdef CONFIG_USER_ONLY
+    start = 0x68000000ul;
+#  elif _MIPS_SIM == _ABI64
+    start = 0x128000000ul;
+#  else
+    start = 0x08000000ul;
+#  endif
 # endif
 
     buf = mmap((void *)start, tcg_ctx.code_gen_buffer_size,
                PROT_WRITE | PROT_READ | PROT_EXEC, flags, -1, 0);
-    return buf == MAP_FAILED ? NULL : buf;
+    if (buf == MAP_FAILED) {
+        return NULL;
+    }
+
+#ifdef __mips__
+    if (cross_256mb(buf, tcg_ctx.code_gen_buffer_size)) {
+        /* Try again, with the original still mapped, to avoid re-acquiring
+           that 256mb crossing.  This time don't specify an address.  */
+        size_t size2, size1 = tcg_ctx.code_gen_buffer_size;
+        void *buf2 = mmap(NULL, size1, PROT_WRITE | PROT_READ | PROT_EXEC,
+                          flags, -1, 0);
+        if (buf2 != MAP_FAILED) {
+            if (!cross_256mb(buf2, size1)) {
+                /* Success!  Use the new buffer.  */
+                munmap(buf, size1);
+                return buf2;
+            }
+            /* Failure.  Work with what we had.  */
+            munmap(buf2, size1);
+        }
+
+        /* Split the original buffer.  Free the smaller half.  */
+        buf2 = split_cross_256mb(buf, size1);
+        size2 = tcg_ctx.code_gen_buffer_size;
+        munmap(buf + (buf == buf2 ? size2 : 0), size1 - size2);
+        return buf2;
+    }
+#endif
+
+    return buf;
 }
 #else
 static inline void *alloc_code_gen_buffer(void)
 {
-    void *buf = g_malloc(tcg_ctx.code_gen_buffer_size);
+    void *buf = g_try_malloc(tcg_ctx.code_gen_buffer_size);
 
-    if (buf) {
-        map_exec(buf, tcg_ctx.code_gen_buffer_size);
+    if (buf == NULL) {
+        return NULL;
     }
+
+#ifdef __mips__
+    if (cross_256mb(buf, tcg_ctx.code_gen_buffer_size)) {
+        void *buf2 = g_malloc(tcg_ctx.code_gen_buffer_size);
+        if (buf2 != NULL && !cross_256mb(buf2, size1)) {
+            /* Success!  Use the new buffer.  */
+            free(buf);
+            buf = buf2;
+        } else {
+            /* Failure.  Work with what we had.  Since this is malloc
+               and not mmap, we can't free the other half.  */
+            free(buf2);
+            buf = split_cross_256mb(buf, tcg_ctx.code_gen_buffer_size);
+        }
+    }
+#endif
+
+    map_exec(buf, tcg_ctx.code_gen_buffer_size);
     return buf;
 }
 #endif /* USE_STATIC_CODE_GEN_BUFFER, USE_MMAP */
@@ -944,12 +1040,14 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
 {
     CPUArchState *env = cpu->env_ptr;
     TranslationBlock *tb;
-    uint8_t *tc_ptr;
     tb_page_addr_t phys_pc, phys_page2;
     target_ulong virt_page2;
     int code_gen_size;
 
     phys_pc = get_page_addr_code(env, pc);
+    if (use_icount) {
+        cflags |= CF_USE_ICOUNT;
+    }
     tb = tb_alloc(pc);
     if (!tb) {
         /* flush must be done */
@@ -959,8 +1057,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
         /* Don't forget to invalidate previous TB info.  */
         tcg_ctx.tb_ctx.tb_invalidated_flag = 1;
     }
-    tc_ptr = tcg_ctx.code_gen_ptr;
-    tb->tc_ptr = tc_ptr;
+    tb->tc_ptr = tcg_ctx.code_gen_ptr;
     tb->cs_base = cs_base;
     tb->flags = flags;
     tb->cflags = cflags;
@@ -1237,8 +1334,6 @@ static inline void tb_alloc_page(TranslationBlock *tb,
     p->first_tb = (TranslationBlock *)((uintptr_t)tb | n);
     invalidate_page_bitmap(p);
 
-#if defined(TARGET_HAS_SMC) || 1
-
 #if defined(CONFIG_USER_ONLY)
     if (p->flags & PAGE_WRITE) {
         target_ulong addr;
@@ -1274,8 +1369,6 @@ static inline void tb_alloc_page(TranslationBlock *tb,
         tlb_protect_code(page_addr);
     }
 #endif
-
-#endif /* TARGET_HAS_SMC */
 }
 
 /* add a new TB and link it to the physical page tables. phys_page2 is
@@ -1354,7 +1447,7 @@ static TranslationBlock *tb_find_pc(uintptr_t tc_ptr)
     return &tcg_ctx.tb_ctx.tbs[m_max];
 }
 
-#if defined(TARGET_HAS_ICE) && !defined(CONFIG_USER_ONLY)
+#if !defined(CONFIG_USER_ONLY)
 void tb_invalidate_phys_addr(AddressSpace *as, hwaddr addr)
 {
     ram_addr_t ram_addr;
@@ -1370,7 +1463,7 @@ void tb_invalidate_phys_addr(AddressSpace *as, hwaddr addr)
         + addr;
     tb_invalidate_phys_page_range(ram_addr, ram_addr + 1, 0);
 }
-#endif /* TARGET_HAS_ICE && !defined(CONFIG_USER_ONLY) */
+#endif /* !defined(CONFIG_USER_ONLY) */
 
 void tb_check_watchpoint(CPUState *cpu)
 {
@@ -1446,7 +1539,7 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
        branch.  */
 #if defined(TARGET_MIPS)
     if ((env->hflags & MIPS_HFLAG_BMASK) != 0 && n > 1) {
-        env->active_tc.PC -= 4;
+        env->active_tc.PC -= (env->hflags & MIPS_HFLAG_B16 ? 2 : 4);
         cpu->icount_decr.u16.low++;
         env->hflags &= ~MIPS_HFLAG_BMASK;
     }
@@ -1557,6 +1650,11 @@ void dump_exec_info(FILE *f, fprintf_function cpu_fprintf)
     tcg_dump_info(f, cpu_fprintf);
 }
 
+void dump_opcount_info(FILE *f, fprintf_function cpu_fprintf)
+{
+    tcg_dump_op_count(f, cpu_fprintf);
+}
+
 #else /* CONFIG_USER_ONLY */
 
 void cpu_interrupt(CPUState *cpu, int mask)
@@ -1572,30 +1670,30 @@ void cpu_interrupt(CPUState *cpu, int mask)
 struct walk_memory_regions_data {
     walk_memory_regions_fn fn;
     void *priv;
-    uintptr_t start;
+    target_ulong start;
     int prot;
 };
 
 static int walk_memory_regions_end(struct walk_memory_regions_data *data,
-                                   abi_ulong end, int new_prot)
+                                   target_ulong end, int new_prot)
 {
-    if (data->start != -1ul) {
+    if (data->start != -1u) {
         int rc = data->fn(data->priv, data->start, end, data->prot);
         if (rc != 0) {
             return rc;
         }
     }
 
-    data->start = (new_prot ? end : -1ul);
+    data->start = (new_prot ? end : -1u);
     data->prot = new_prot;
 
     return 0;
 }
 
 static int walk_memory_regions_1(struct walk_memory_regions_data *data,
-                                 abi_ulong base, int level, void **lp)
+                                 target_ulong base, int level, void **lp)
 {
-    abi_ulong pa;
+    target_ulong pa;
     int i, rc;
 
     if (*lp == NULL) {
@@ -1620,7 +1718,7 @@ static int walk_memory_regions_1(struct walk_memory_regions_data *data,
         void **pp = *lp;
 
         for (i = 0; i < V_L2_SIZE; ++i) {
-            pa = base | ((abi_ulong)i <<
+            pa = base | ((target_ulong)i <<
                 (TARGET_PAGE_BITS + V_L2_BITS * level));
             rc = walk_memory_regions_1(data, pa, level - 1, pp + i);
             if (rc != 0) {
@@ -1639,13 +1737,12 @@ int walk_memory_regions(void *priv, walk_memory_regions_fn fn)
 
     data.fn = fn;
     data.priv = priv;
-    data.start = -1ul;
+    data.start = -1u;
     data.prot = 0;
 
     for (i = 0; i < V_L1_SIZE; i++) {
-        int rc = walk_memory_regions_1(&data, (abi_ulong)i << V_L1_SHIFT,
+        int rc = walk_memory_regions_1(&data, (target_ulong)i << (V_L1_SHIFT + TARGET_PAGE_BITS),
                                        V_L1_SHIFT / V_L2_BITS - 1, l1_map + i);
-
         if (rc != 0) {
             return rc;
         }
@@ -1654,13 +1751,13 @@ int walk_memory_regions(void *priv, walk_memory_regions_fn fn)
     return walk_memory_regions_end(&data, 0, 0);
 }
 
-static int dump_region(void *priv, abi_ulong start,
-    abi_ulong end, unsigned long prot)
+static int dump_region(void *priv, target_ulong start,
+    target_ulong end, unsigned long prot)
 {
     FILE *f = (FILE *)priv;
 
-    (void) fprintf(f, TARGET_ABI_FMT_lx"-"TARGET_ABI_FMT_lx
-        " "TARGET_ABI_FMT_lx" %c%c%c\n",
+    (void) fprintf(f, TARGET_FMT_lx"-"TARGET_FMT_lx
+        " "TARGET_FMT_lx" %c%c%c\n",
         start, end, end - start,
         ((prot & PAGE_READ) ? 'r' : '-'),
         ((prot & PAGE_WRITE) ? 'w' : '-'),
@@ -1672,7 +1769,7 @@ static int dump_region(void *priv, abi_ulong start,
 /* dump memory mappings */
 void page_dump(FILE *f)
 {
-    const int length = sizeof(abi_ulong) * 2;
+    const int length = sizeof(target_ulong) * 2;
     (void) fprintf(f, "%-*s %-*s %-*s %s\n",
             length, "start", length, "end", length, "size", "prot");
     walk_memory_regions(f, dump_region);
@@ -1700,7 +1797,7 @@ void page_set_flags(target_ulong start, target_ulong end, int flags)
        guest address space.  If this assert fires, it probably indicates
        a missing call to h2g_valid.  */
 #if TARGET_ABI_BITS > L1_MAP_ADDR_SPACE_BITS
-    assert(end < ((abi_ulong)1 << L1_MAP_ADDR_SPACE_BITS));
+    assert(end < ((target_ulong)1 << L1_MAP_ADDR_SPACE_BITS));
 #endif
     assert(start < end);
 
@@ -1737,7 +1834,7 @@ int page_check_range(target_ulong start, target_ulong len, int flags)
        guest address space.  If this assert fires, it probably indicates
        a missing call to h2g_valid.  */
 #if TARGET_ABI_BITS > L1_MAP_ADDR_SPACE_BITS
-    assert(start < ((abi_ulong)1 << L1_MAP_ADDR_SPACE_BITS));
+    assert(start < ((target_ulong)1 << L1_MAP_ADDR_SPACE_BITS));
 #endif
 
     if (len == 0) {
@@ -1777,7 +1874,6 @@ int page_check_range(target_ulong start, target_ulong len, int flags)
                     return -1;
                 }
             }
-            return 0;
         }
     }
     return 0;

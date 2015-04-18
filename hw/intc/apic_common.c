@@ -117,7 +117,12 @@ void apic_report_irq_delivered(int delivered)
 
 void apic_reset_irq_delivered(void)
 {
-    trace_apic_reset_irq_delivered(apic_irq_delivered);
+    /* Copy this into a local variable to encourage gcc to emit a plain
+     * register for a sys/sdt.h marker.  For details on this workaround, see:
+     * https://sourceware.org/bugzilla/show_bug.cgi?id=13296
+     */
+    volatile int a_i_d = apic_irq_delivered;
+    trace_apic_reset_irq_delivered(a_i_d);
 
     apic_irq_delivered = 0;
 }
@@ -172,12 +177,14 @@ bool apic_next_timer(APICCommonState *s, int64_t current_time)
 
 void apic_init_reset(DeviceState *dev)
 {
-    APICCommonState *s = APIC_COMMON(dev);
+    APICCommonState *s;
+    APICCommonClass *info;
     int i;
 
-    if (!s) {
+    if (!dev) {
         return;
     }
+    s = APIC_COMMON(dev);
     s->tpr = 0;
     s->spurious_vec = 0xff;
     s->log_dest = 0;
@@ -195,22 +202,31 @@ void apic_init_reset(DeviceState *dev)
     s->initial_count = 0;
     s->initial_count_load_time = 0;
     s->next_time = 0;
-    s->wait_for_sipi = 1;
+    s->wait_for_sipi = !cpu_is_bsp(s->cpu);
 
     if (s->timer) {
         timer_del(s->timer);
     }
     s->timer_expiry = -1;
+
+    info = APIC_COMMON_GET_CLASS(s);
+    if (info->reset) {
+        info->reset(s);
+    }
 }
 
-void apic_designate_bsp(DeviceState *dev)
+void apic_designate_bsp(DeviceState *dev, bool bsp)
 {
     if (dev == NULL) {
         return;
     }
 
     APICCommonState *s = APIC_COMMON(dev);
-    s->apicbase |= MSR_IA32_APICBASE_BSP;
+    if (bsp) {
+        s->apicbase |= MSR_IA32_APICBASE_BSP;
+    } else {
+        s->apicbase &= ~MSR_IA32_APICBASE_BSP;
+    }
 }
 
 static void apic_reset_common(DeviceState *dev)
@@ -319,6 +335,19 @@ static void apic_common_realize(DeviceState *dev, Error **errp)
 
 }
 
+static int apic_pre_load(void *opaque)
+{
+    APICCommonState *s = APIC_COMMON(opaque);
+
+    /* The default is !cpu_is_bsp(s->cpu), but the common value is 0
+     * so that's what apic_common_sipi_needed checks for.  Reset to
+     * the value that is assumed when the apic_sipi subsection is
+     * absent.
+     */
+    s->wait_for_sipi = 0;
+    return 0;
+}
+
 static void apic_dispatch_pre_save(void *opaque)
 {
     APICCommonState *s = APIC_COMMON(opaque);
@@ -340,12 +369,30 @@ static int apic_dispatch_post_load(void *opaque, int version_id)
     return 0;
 }
 
+static bool apic_common_sipi_needed(void *opaque)
+{
+    APICCommonState *s = APIC_COMMON(opaque);
+    return s->wait_for_sipi != 0;
+}
+
+static const VMStateDescription vmstate_apic_common_sipi = {
+    .name = "apic_sipi",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (VMStateField[]) {
+        VMSTATE_INT32(sipi_vector, APICCommonState),
+        VMSTATE_INT32(wait_for_sipi, APICCommonState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_apic_common = {
     .name = "apic",
     .version_id = 3,
     .minimum_version_id = 3,
     .minimum_version_id_old = 1,
     .load_state_old = apic_load_old,
+    .pre_load = apic_pre_load,
     .pre_save = apic_dispatch_pre_save,
     .post_load = apic_dispatch_post_load,
     .fields = (VMStateField[]) {
@@ -370,11 +417,19 @@ static const VMStateDescription vmstate_apic_common = {
         VMSTATE_INT64(timer_expiry,
                       APICCommonState), /* open-coded timer state */
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (VMStateSubsection[]) {
+        {
+            .vmsd = &vmstate_apic_common_sipi,
+            .needed = apic_common_sipi_needed,
+        },
+        VMSTATE_END_OF_LIST()
     }
 };
 
 static Property apic_properties_common[] = {
     DEFINE_PROP_UINT8("id", APICCommonState, id, -1),
+    DEFINE_PROP_UINT8("version", APICCommonState, version, 0x14),
     DEFINE_PROP_BIT("vapic", APICCommonState, vapic_control, VAPIC_ENABLE_BIT,
                     true),
     DEFINE_PROP_END_OF_LIST(),

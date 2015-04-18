@@ -22,11 +22,11 @@
 #include "hw/hw.h"
 #include "hw/i386/pc.h"
 #include "hw/acpi/acpi.h"
-#include "monitor/monitor.h"
 #include "qemu/config-file.h"
 #include "qapi/opts-visitor.h"
 #include "qapi/dealloc-visitor.h"
 #include "qapi-visit.h"
+#include "qapi-event.h"
 
 struct acpi_table_header {
     uint16_t _length;         /* our length, not actual part of the hdr */
@@ -376,8 +376,11 @@ static void acpi_notify_wakeup(Notifier *notifier, void *data)
 /* ACPI PM1a EVT */
 uint16_t acpi_pm1_evt_get_sts(ACPIREGS *ar)
 {
-    int64_t d = acpi_pm_tmr_get_clock();
-    if (d >= ar->tmr.overflow_time) {
+    /* Compare ns-clock, not PM timer ticks, because
+       acpi_pm_tmr_update function uses ns for setting the timer. */
+    int64_t d = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (d >= muldiv64(ar->tmr.overflow_time,
+                      get_ticks_per_sec(), PM_TIMER_FREQUENCY)) {
         ar->pm1.evt.sts |= ACPI_BITMASK_TIMER_STATUS;
     }
     return ar->pm1.evt.sts;
@@ -550,7 +553,7 @@ static void acpi_pm1_cnt_write(ACPIREGS *ar, uint16_t val)
             break;
         default:
             if (sus_typ == ar->pm1.cnt.s4_val) { /* S4 request */
-                monitor_protocol_event(QEVENT_SUSPEND_DISK, NULL);
+                qapi_event_send_suspend_disk(&error_abort);
                 qemu_system_shutdown_request();
             }
             break;

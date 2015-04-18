@@ -1,7 +1,7 @@
 #include "net/net.h"
 #include "hw/qdev.h"
 #include "qapi/qmp/qerror.h"
-#include "sysemu/blockdev.h"
+#include "sysemu/block-backend.h"
 #include "hw/block/block.h"
 #include "net/hub.h"
 #include "qapi/visitor.h"
@@ -120,7 +120,7 @@ static void prop_set_bit(Object *obj, Visitor *v, void *opaque,
 
 PropertyInfo qdev_prop_bit = {
     .name  = "bool",
-    .legacy_name  = "on/off",
+    .description = "on/off",
     .get   = prop_get_bit,
     .set   = prop_set_bit,
 };
@@ -455,7 +455,7 @@ inval:
 
 PropertyInfo qdev_prop_macaddr = {
     .name  = "str",
-    .legacy_name  = "macaddr",
+    .description = "Ethernet 6-byte MAC Address, example: 52:54:00:12:34:56",
     .get   = get_mac,
     .set   = set_mac,
 };
@@ -477,7 +477,8 @@ QEMU_BUILD_BUG_ON(sizeof(BiosAtaTranslation) != sizeof(int));
 
 PropertyInfo qdev_prop_bios_chs_trans = {
     .name = "BiosAtaTranslation",
-    .legacy_name = "bios-chs-trans",
+    .description = "Logical CHS translation algorithm, "
+                   "auto/none/lba/large/rechs",
     .enum_table = BiosAtaTranslation_lookup,
     .get = get_enum,
     .set = set_enum,
@@ -551,7 +552,7 @@ static int print_pci_devfn(DeviceState *dev, Property *prop, char *dest,
 
 PropertyInfo qdev_prop_pci_devfn = {
     .name  = "int32",
-    .legacy_name  = "pci-devfn",
+    .description = "Slot and optional function number, example: 06.0 or 06",
     .print = print_pci_devfn,
     .get   = get_int32,
     .set   = set_pci_devfn,
@@ -579,7 +580,8 @@ static void set_blocksize(Object *obj, Visitor *v, void *opaque,
         error_propagate(errp, local_err);
         return;
     }
-    if (value < min || value > max) {
+    /* value of 0 means "unset" */
+    if (value && (value < min || value > max)) {
         error_set(errp, QERR_PROPERTY_VALUE_OUT_OF_RANGE,
                   dev->id?:"", name, (int64_t)value, min, max);
         return;
@@ -587,8 +589,9 @@ static void set_blocksize(Object *obj, Visitor *v, void *opaque,
 
     /* We rely on power-of-2 blocksizes for bitmasks */
     if ((value & (value - 1)) != 0) {
-        error_set(errp, QERR_PROPERTY_VALUE_NOT_POWER_OF_2,
-                  dev->id?:"", name, (int64_t)value);
+        error_setg(errp,
+                  "Property %s.%s doesn't take value '%" PRId64 "', it's not a power of 2",
+                  dev->id ?: "", name, (int64_t)value);
         return;
     }
 
@@ -597,7 +600,7 @@ static void set_blocksize(Object *obj, Visitor *v, void *opaque,
 
 PropertyInfo qdev_prop_blocksize = {
     .name  = "uint16",
-    .legacy_name  = "blocksize",
+    .description = "A power of two between 512 and 32768",
     .get   = get_uint16,
     .set   = set_blocksize,
 };
@@ -705,7 +708,8 @@ inval:
 
 PropertyInfo qdev_prop_pci_host_devaddr = {
     .name = "str",
-    .legacy_name = "pci-host-devaddr",
+    .description = "Address (bus/device/function) of "
+                   "the host device, example: 04:10.0",
     .get = get_pci_host_devaddr,
     .set = set_pci_host_devaddr,
 };
@@ -750,6 +754,7 @@ static void set_prop_arraylen(Object *obj, Visitor *v, void *opaque,
     Property *prop = opaque;
     uint32_t *alenptr = qdev_get_prop_ptr(dev, prop);
     void **arrayptr = (void *)dev + prop->arrayoffset;
+    Error *local_err = NULL;
     void *eltptr;
     const char *arrayname;
     int i;
@@ -763,8 +768,9 @@ static void set_prop_arraylen(Object *obj, Visitor *v, void *opaque,
                    name);
         return;
     }
-    visit_type_uint32(v, alenptr, name, errp);
-    if (error_is_set(errp)) {
+    visit_type_uint32(v, alenptr, name, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
         return;
     }
     if (!*alenptr) {
@@ -801,8 +807,9 @@ static void set_prop_arraylen(Object *obj, Visitor *v, void *opaque,
                             arrayprop->prop.info->get,
                             arrayprop->prop.info->set,
                             array_element_release,
-                            arrayprop, errp);
-        if (error_is_set(errp)) {
+                            arrayprop, &local_err);
+        if (local_err) {
+            error_propagate(errp, local_err);
             return;
         }
     }
@@ -853,7 +860,7 @@ void error_set_from_qdev_prop_error(Error **errp, int ret, DeviceState *dev,
 {
     switch (ret) {
     case -EEXIST:
-        error_set(errp, QERR_PROPERTY_VALUE_IN_USE,
+        error_setg(errp, "Property '%s.%s' can't take value '%s', it's in use",
                   object_get_typename(OBJECT(dev)), prop->name, value);
         break;
     default:
@@ -862,7 +869,7 @@ void error_set_from_qdev_prop_error(Error **errp, int ret, DeviceState *dev,
                   object_get_typename(OBJECT(dev)), prop->name, value);
         break;
     case -ENOENT:
-        error_set(errp, QERR_PROPERTY_VALUE_NOT_FOUND,
+        error_setg(errp, "Property '%s.%s' can't find value '%s'",
                   object_get_typename(OBJECT(dev)), prop->name, value);
         break;
     case 0:
@@ -951,8 +958,41 @@ void qdev_prop_register_global_list(GlobalProperty *props)
     }
 }
 
-void qdev_prop_set_globals_for_type(DeviceState *dev, const char *typename,
-                                    Error **errp)
+int qdev_prop_check_globals(void)
+{
+    GlobalProperty *prop;
+    int ret = 0;
+
+    QTAILQ_FOREACH(prop, &global_props, next) {
+        ObjectClass *oc;
+        DeviceClass *dc;
+        if (prop->used) {
+            continue;
+        }
+        if (!prop->user_provided) {
+            continue;
+        }
+        oc = object_class_by_name(prop->driver);
+        oc = object_class_dynamic_cast(oc, TYPE_DEVICE);
+        if (!oc) {
+            error_report("Warning: global %s.%s has invalid class name",
+                       prop->driver, prop->property);
+            ret = 1;
+            continue;
+        }
+        dc = DEVICE_CLASS(oc);
+        if (!dc->hotpluggable && !prop->used) {
+            error_report("Warning: global %s.%s=%s not used",
+                       prop->driver, prop->property, prop->value);
+            ret = 1;
+            continue;
+        }
+    }
+    return ret;
+}
+
+static void qdev_prop_set_globals_for_type(DeviceState *dev,
+                                const char *typename)
 {
     GlobalProperty *prop;
 
@@ -962,27 +1002,25 @@ void qdev_prop_set_globals_for_type(DeviceState *dev, const char *typename,
         if (strcmp(typename, prop->driver) != 0) {
             continue;
         }
+        prop->used = true;
         object_property_parse(OBJECT(dev), prop->value, prop->property, &err);
         if (err != NULL) {
-            error_propagate(errp, err);
+            assert(prop->user_provided);
+            error_report("Warning: global %s.%s=%s ignored (%s)",
+                         prop->driver, prop->property, prop->value,
+                         error_get_pretty(err));
+            error_free(err);
             return;
         }
     }
 }
 
-void qdev_prop_set_globals(DeviceState *dev, Error **errp)
+void qdev_prop_set_globals(DeviceState *dev)
 {
     ObjectClass *class = object_get_class(OBJECT(dev));
 
     do {
-        Error *err = NULL;
-
-        qdev_prop_set_globals_for_type(dev, object_class_get_name(class),
-                                       &err);
-        if (err != NULL) {
-            error_propagate(errp, err);
-            return;
-        }
+        qdev_prop_set_globals_for_type(dev, object_class_get_name(class));
         class = object_class_get_parent(class);
     } while (class);
 }

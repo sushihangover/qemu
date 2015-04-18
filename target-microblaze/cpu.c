@@ -96,6 +96,8 @@ static void mb_cpu_reset(CPUState *s)
     env->pvr.regs[10] = 0x0c000000; /* Default to spartan 3a dsp family.  */
     env->pvr.regs[11] = PVR11_USE_MMU | (16 << 17);
 
+    env->sregs[SR_PC] = cpu->base_vectors;
+
 #if defined(CONFIG_USER_ONLY)
     /* start in user mode with interrupts enabled.  */
     env->sregs[SR_MSR] = MSR_EE | MSR_IE | MSR_VM | MSR_UM;
@@ -167,6 +169,7 @@ static void mb_cpu_class_init(ObjectClass *oc, void *data)
 
     cc->has_work = mb_cpu_has_work;
     cc->do_interrupt = mb_cpu_do_interrupt;
+    cc->cpu_exec_interrupt = mb_cpu_exec_interrupt;
     cc->dump_state = mb_cpu_dump_state;
     cc->set_pc = mb_cpu_set_pc;
     cc->gdb_read_register = mb_cpu_gdb_read_register;

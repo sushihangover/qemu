@@ -101,11 +101,11 @@ static void leon3_set_pil_in(void *opaque, uint32_t pil_in)
     }
 }
 
-static void leon3_generic_hw_init(QEMUMachineInitArgs *args)
+static void leon3_generic_hw_init(MachineState *machine)
 {
-    ram_addr_t ram_size = args->ram_size;
-    const char *cpu_model = args->cpu_model;
-    const char *kernel_filename = args->kernel_filename;
+    ram_addr_t ram_size = machine->ram_size;
+    const char *cpu_model = machine->cpu_model;
+    const char *kernel_filename = machine->kernel_filename;
     SPARCCPU *cpu;
     CPUSPARCState   *env;
     MemoryRegion *address_space_mem = get_system_memory();
@@ -151,13 +151,12 @@ static void leon3_generic_hw_init(QEMUMachineInitArgs *args)
         exit(1);
     }
 
-    memory_region_init_ram(ram, NULL, "leon3.ram", ram_size);
-    vmstate_register_ram_global(ram);
+    memory_region_allocate_system_memory(ram, NULL, "leon3.ram", ram_size);
     memory_region_add_subregion(address_space_mem, 0x40000000, ram);
 
     /* Allocate BIOS */
     prom_size = 8 * 1024 * 1024; /* 8Mb */
-    memory_region_init_ram(prom, NULL, "Leon3.bios", prom_size);
+    memory_region_init_ram(prom, NULL, "Leon3.bios", prom_size, &error_abort);
     vmstate_register_ram_global(prom);
     memory_region_set_readonly(prom, true);
     memory_region_add_subregion(address_space_mem, 0x00000000, prom);
@@ -186,6 +185,7 @@ static void leon3_generic_hw_init(QEMUMachineInitArgs *args)
         fprintf(stderr, "Can't read bios image %s\n", filename);
         exit(1);
     }
+    g_free(filename);
 
     /* Can directly load an application. */
     if (kernel_filename != NULL) {

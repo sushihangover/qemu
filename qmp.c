@@ -28,6 +28,8 @@
 #include "qapi/qmp-input-visitor.h"
 #include "hw/boards.h"
 #include "qom/object_interfaces.h"
+#include "hw/mem/pc-dimm.h"
+#include "hw/acpi/acpi_dev_interface.h"
 
 NameInfo *qmp_query_name(Error **errp)
 {
@@ -41,7 +43,7 @@ NameInfo *qmp_query_name(Error **errp)
     return info;
 }
 
-VersionInfo *qmp_query_version(Error **err)
+VersionInfo *qmp_query_version(Error **errp)
 {
     VersionInfo *info = g_malloc0(sizeof(*info));
     const char *version = QEMU_VERSION;
@@ -82,7 +84,7 @@ UuidInfo *qmp_query_uuid(Error **errp)
     return info;
 }
 
-void qmp_quit(Error **err)
+void qmp_quit(Error **errp)
 {
     no_shutdown = 0;
     qemu_system_shutdown_request();
@@ -117,8 +119,8 @@ void qmp_cpu_add(int64_t id, Error **errp)
     MachineClass *mc;
 
     mc = MACHINE_GET_CLASS(current_machine);
-    if (mc->qemu_machine->hot_add_cpu) {
-        mc->qemu_machine->hot_add_cpu(id, errp);
+    if (mc->hot_add_cpu) {
+        mc->hot_add_cpu(id, errp);
     } else {
         error_setg(errp, "Not supported");
     }
@@ -132,51 +134,51 @@ VncInfo *qmp_query_vnc(Error **errp)
     error_set(errp, QERR_FEATURE_DISABLED, "vnc");
     return NULL;
 };
-#endif
 
-#ifndef CONFIG_SPICE
-/* If SPICE support is enabled, the "true" query-spice command is
-   defined in the SPICE subsystem. Also note that we use a small
-   trick to maintain query-spice's original behavior, which is not
-   to be available in the namespace if SPICE is not compiled in */
-SpiceInfo *qmp_query_spice(Error **errp)
+VncInfo2List *qmp_query_vnc_servers(Error **errp)
 {
-    error_set(errp, QERR_COMMAND_NOT_FOUND, "query-spice");
+    error_set(errp, QERR_FEATURE_DISABLED, "vnc");
     return NULL;
 };
 #endif
 
-static void iostatus_bdrv_it(void *opaque, BlockDriverState *bs)
+#ifndef CONFIG_SPICE
+/*
+ * qmp-commands.hx ensures that QMP command query-spice exists only
+ * #ifdef CONFIG_SPICE.  Necessary for an accurate query-commands
+ * result.  However, the QAPI schema is blissfully unaware of that,
+ * and the QAPI code generator happily generates a dead
+ * qmp_marshal_input_query_spice() that calls qmp_query_spice().
+ * Provide it one, or else linking fails.
+ * FIXME Educate the QAPI schema on CONFIG_SPICE.
+ */
+SpiceInfo *qmp_query_spice(Error **errp)
 {
-    bdrv_iostatus_reset(bs);
-}
-
-static void encrypted_bdrv_it(void *opaque, BlockDriverState *bs)
-{
-    Error **err = opaque;
-
-    if (!error_is_set(err) && bdrv_key_required(bs)) {
-        error_set(err, QERR_DEVICE_ENCRYPTED, bdrv_get_device_name(bs),
-                  bdrv_get_encrypted_filename(bs));
-    }
-}
+    abort();
+};
+#endif
 
 void qmp_cont(Error **errp)
 {
     Error *local_err = NULL;
+    BlockDriverState *bs;
 
     if (runstate_needs_reset()) {
-        error_set(errp, QERR_RESET_REQUIRED);
+        error_setg(errp, "Resetting the Virtual Machine is required");
         return;
     } else if (runstate_check(RUN_STATE_SUSPENDED)) {
         return;
     }
 
-    bdrv_iterate(iostatus_bdrv_it, NULL);
-    bdrv_iterate(encrypted_bdrv_it, &local_err);
-    if (local_err) {
-        error_propagate(errp, local_err);
-        return;
+    for (bs = bdrv_next(NULL); bs; bs = bdrv_next(bs)) {
+        bdrv_iostatus_reset(bs);
+    }
+    for (bs = bdrv_next(NULL); bs; bs = bdrv_next(bs)) {
+        bdrv_add_key(bs, NULL, &local_err);
+        if (local_err) {
+            error_propagate(errp, local_err);
+            return;
+        }
     }
 
     if (runstate_check(RUN_STATE_INMIGRATE)) {
@@ -200,7 +202,11 @@ ObjectPropertyInfoList *qmp_qom_list(const char *path, Error **errp)
 
     obj = object_resolve_path(path, &ambiguous);
     if (obj == NULL) {
-        error_set(errp, QERR_DEVICE_NOT_FOUND, path);
+        if (ambiguous) {
+            error_setg(errp, "Path '%s' is ambiguous", path);
+        } else {
+            error_set(errp, QERR_DEVICE_NOT_FOUND, path);
+        }
         return NULL;
     }
 
@@ -291,9 +297,7 @@ void qmp_set_password(const char *protocol, const char *password,
     }
 
     if (strcmp(protocol, "spice") == 0) {
-        if (!using_spice) {
-            /* correct one? spice isn't a device ,,, */
-            error_set(errp, QERR_DEVICE_NOT_ACTIVE, "spice");
+        if (!qemu_using_spice(errp)) {
             return;
         }
         rc = qemu_spice_set_passwd(password, fail_if_connected,
@@ -339,9 +343,7 @@ void qmp_expire_password(const char *protocol, const char *whenstr,
     }
 
     if (strcmp(protocol, "spice") == 0) {
-        if (!using_spice) {
-            /* correct one? spice isn't a device ,,, */
-            error_set(errp, QERR_DEVICE_NOT_ACTIVE, "spice");
+        if (!qemu_using_spice(errp)) {
             return;
         }
         rc = qemu_spice_set_pw_expire(when);
@@ -372,7 +374,24 @@ void qmp_change_vnc_password(const char *password, Error **errp)
 
 static void qmp_change_vnc_listen(const char *target, Error **errp)
 {
-    vnc_display_open(NULL, target, errp);
+    QemuOptsList *olist = qemu_find_opts("vnc");
+    QemuOpts *opts;
+
+    if (strstr(target, "id=")) {
+        error_setg(errp, "id not supported");
+        return;
+    }
+
+    opts = qemu_opts_find(olist, "default");
+    if (opts) {
+        qemu_opts_del(opts);
+    }
+    opts = vnc_parse_func(target);
+    if (!opts) {
+        return;
+    }
+
+    vnc_display_open("default", errp);
 }
 
 static void qmp_change_vnc(const char *target, bool has_arg, const char *arg,
@@ -401,12 +420,12 @@ static void qmp_change_vnc(const char *target, bool has_arg, const char *arg,
 #endif /* !CONFIG_VNC */
 
 void qmp_change(const char *device, const char *target,
-                bool has_arg, const char *arg, Error **err)
+                bool has_arg, const char *arg, Error **errp)
 {
     if (strcmp(device, "vnc") == 0) {
-        qmp_change_vnc(target, has_arg, arg, err);
+        qmp_change_vnc(target, has_arg, arg, errp);
     } else {
-        qmp_change_blockdev(device, target, arg, err);
+        qmp_change_blockdev(device, target, arg, errp);
     }
 }
 
@@ -437,11 +456,63 @@ ObjectTypeInfoList *qmp_qom_list_types(bool has_implements,
     return ret;
 }
 
+/* Return a DevicePropertyInfo for a qdev property.
+ *
+ * If a qdev property with the given name does not exist, use the given default
+ * type.  If the qdev property info should not be shown, return NULL.
+ *
+ * The caller must free the return value.
+ */
+static DevicePropertyInfo *make_device_property_info(ObjectClass *klass,
+                                                     const char *name,
+                                                     const char *default_type,
+                                                     const char *description)
+{
+    DevicePropertyInfo *info;
+    Property *prop;
+
+    do {
+        for (prop = DEVICE_CLASS(klass)->props; prop && prop->name; prop++) {
+            if (strcmp(name, prop->name) != 0) {
+                continue;
+            }
+
+            /*
+             * TODO Properties without a parser are just for dirty hacks.
+             * qdev_prop_ptr is the only such PropertyInfo.  It's marked
+             * for removal.  This conditional should be removed along with
+             * it.
+             */
+            if (!prop->info->set) {
+                return NULL;           /* no way to set it, don't show */
+            }
+
+            info = g_malloc0(sizeof(*info));
+            info->name = g_strdup(prop->name);
+            info->type = g_strdup(prop->info->name);
+            info->has_description = !!prop->info->description;
+            info->description = g_strdup(prop->info->description);
+            return info;
+        }
+        klass = object_class_get_parent(klass);
+    } while (klass != object_class_by_name(TYPE_DEVICE));
+
+    /* Not a qdev property, use the default type */
+    info = g_malloc0(sizeof(*info));
+    info->name = g_strdup(name);
+    info->type = g_strdup(default_type);
+    info->has_description = !!description;
+    info->description = g_strdup(description);
+
+    return info;
+}
+
 DevicePropertyInfoList *qmp_device_list_properties(const char *typename,
                                                    Error **errp)
 {
     ObjectClass *klass;
-    Property *prop;
+    Object *obj;
+    ObjectProperty *prop;
     DevicePropertyInfoList *prop_list = NULL;
 
     klass = object_class_by_name(typename);
@@ -457,32 +528,41 @@ DevicePropertyInfoList *qmp_device_list_properties(const char *typename,
         return NULL;
     }
 
-    do {
-        for (prop = DEVICE_CLASS(klass)->props; prop && prop->name; prop++) {
-            DevicePropertyInfoList *entry;
-            DevicePropertyInfo *info;
+    obj = object_new(typename);
 
-            /*
-             * TODO Properties without a parser are just for dirty hacks.
-             * qdev_prop_ptr is the only such PropertyInfo.  It's marked
-             * for removal.  This conditional should be removed along with
-             * it.
-             */
-            if (!prop->info->set) {
-                continue;           /* no way to set it, don't show */
-            }
+    QTAILQ_FOREACH(prop, &obj->properties, node) {
+        DevicePropertyInfo *info;
+        DevicePropertyInfoList *entry;
 
-            info = g_malloc0(sizeof(*info));
-            info->name = g_strdup(prop->name);
-            info->type = g_strdup(prop->info->legacy_name ?: prop->info->name);
-
-            entry = g_malloc0(sizeof(*entry));
-            entry->value = info;
-            entry->next = prop_list;
-            prop_list = entry;
+        /* Skip Object and DeviceState properties */
+        if (strcmp(prop->name, "type") == 0 ||
+            strcmp(prop->name, "realized") == 0 ||
+            strcmp(prop->name, "hotpluggable") == 0 ||
+            strcmp(prop->name, "hotplugged") == 0 ||
+            strcmp(prop->name, "parent_bus") == 0) {
+            continue;
         }
-        klass = object_class_get_parent(klass);
-    } while (klass != object_class_by_name(TYPE_DEVICE));
+
+        /* Skip legacy properties since they are just string versions of
+         * properties that we already list.
+         */
+        if (strstart(prop->name, "legacy-", NULL)) {
+            continue;
+        }
+
+        info = make_device_property_info(klass, prop->name, prop->type,
+                                         prop->description);
+        if (!info) {
+            continue;
+        }
+
+        entry = g_malloc0(sizeof(*entry));
+        entry->value = info;
+        entry->next = prop_list;
+        prop_list = entry;
+    }
+
+    object_unref(obj);
 
     return prop_list;
 }
@@ -505,8 +585,7 @@ void qmp_add_client(const char *protocol, const char *fdname,
     }
 
     if (strcmp(protocol, "spice") == 0) {
-        if (!using_spice) {
-            error_set(errp, QERR_DEVICE_NOT_ACTIVE, "spice");
+        if (!qemu_using_spice(errp)) {
             close(fd);
             return;
         }
@@ -540,11 +619,24 @@ void object_add(const char *type, const char *id, const QDict *qdict,
                 Visitor *v, Error **errp)
 {
     Object *obj;
+    ObjectClass *klass;
     const QDictEntry *e;
     Error *local_err = NULL;
 
-    if (!object_class_by_name(type)) {
-        error_setg(errp, "invalid class name");
+    klass = object_class_by_name(type);
+    if (!klass) {
+        error_setg(errp, "invalid object type: %s", type);
+        return;
+    }
+
+    if (!object_class_dynamic_cast(klass, TYPE_USER_CREATABLE)) {
+        error_setg(errp, "object type '%s' isn't supported by object-add",
+                   type);
+        return;
+    }
+
+    if (object_class_is_abstract(klass)) {
+        error_setg(errp, "object type '%s' is abstract", type);
         return;
     }
 
@@ -558,19 +650,18 @@ void object_add(const char *type, const char *id, const QDict *qdict,
         }
     }
 
-    if (!object_dynamic_cast(obj, TYPE_USER_CREATABLE)) {
-        error_setg(&local_err, "object type '%s' isn't supported by object-add",
-                   type);
+    object_property_add_child(container_get(object_get_root(), "/objects"),
+                              id, obj, &local_err);
+    if (local_err) {
         goto out;
     }
 
     user_creatable_complete(obj, &local_err);
     if (local_err) {
+        object_property_del(container_get(object_get_root(), "/objects"),
+                            id, &error_abort);
         goto out;
     }
-
-    object_property_add_child(container_get(object_get_root(), "/objects"),
-                              id, obj, &local_err);
 out:
     if (local_err) {
         error_propagate(errp, local_err);
@@ -620,5 +711,39 @@ void qmp_object_del(const char *id, Error **errp)
         error_setg(errp, "object id not found");
         return;
     }
+
+    if (!user_creatable_can_be_deleted(USER_CREATABLE(obj), errp)) {
+        error_setg(errp, "%s is in use, can not be deleted", id);
+        return;
+    }
     object_unparent(obj);
+}
+
+MemoryDeviceInfoList *qmp_query_memory_devices(Error **errp)
+{
+    MemoryDeviceInfoList *head = NULL;
+    MemoryDeviceInfoList **prev = &head;
+
+    qmp_pc_dimm_device_list(qdev_get_machine(), &prev);
+
+    return head;
+}
+
+ACPIOSTInfoList *qmp_query_acpi_ospm_status(Error **errp)
+{
+    bool ambig;
+    ACPIOSTInfoList *head = NULL;
+    ACPIOSTInfoList **prev = &head;
+    Object *obj = object_resolve_path_type("", TYPE_ACPI_DEVICE_IF, &ambig);
+
+    if (obj) {
+        AcpiDeviceIfClass *adevc = ACPI_DEVICE_IF_GET_CLASS(obj);
+        AcpiDeviceIf *adev = ACPI_DEVICE_IF(obj);
+
+        adevc->ospm_status(adev, &prev);
+    } else {
+        error_setg(errp, "command is not supported, missing ACPI device");
+    }
+
+    return head;
 }

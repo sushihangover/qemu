@@ -189,6 +189,7 @@ static void tap_send(void *opaque)
 {
     TAPState *s = opaque;
     int size;
+    int packets = 0;
 
     while (qemu_can_send_packet(&s->nc)) {
         uint8_t *buf = s->buf;
@@ -208,6 +209,17 @@ static void tap_send(void *opaque)
             tap_read_poll(s, false);
             break;
         } else if (size < 0) {
+            break;
+        }
+
+        /*
+         * When the host keeps receiving more packets while tap_send() is
+         * running we can hog the QEMU global mutex.  Limit the number of
+         * packets that are processed per tap_send() callback to prevent
+         * stalling the guest.
+         */
+        packets++;
+        if (packets >= 50) {
             break;
         }
     }
@@ -367,11 +379,8 @@ static int launch_script(const char *setup_script, const char *ifname, int fd)
     if (pid == 0) {
         int open_max = sysconf(_SC_OPEN_MAX), i;
 
-        for (i = 0; i < open_max; i++) {
-            if (i != STDIN_FILENO &&
-                i != STDOUT_FILENO &&
-                i != STDERR_FILENO &&
-                i != fd) {
+        for (i = 3; i < open_max; i++) {
+            if (i != fd) {
                 close(i);
             }
         }
@@ -452,11 +461,8 @@ static int net_bridge_run_helper(const char *helper, const char *bridge)
         char br_buf[6+IFNAMSIZ] = {0};
         char helper_cmd[PATH_MAX + sizeof(fd_buf) + sizeof(br_buf) + 15];
 
-        for (i = 0; i < open_max; i++) {
-            if (i != STDIN_FILENO &&
-                i != STDOUT_FILENO &&
-                i != STDERR_FILENO &&
-                i != sv[1]) {
+        for (i = 3; i < open_max; i++) {
+            if (i != sv[1]) {
                 close(i);
             }
         }
@@ -599,11 +605,12 @@ static int net_init_tap_one(const NetdevTapOptions *tap, NetClientState *peer,
                             const char *downscript, const char *vhostfdname,
                             int vnet_hdr, int fd)
 {
+    Error *err = NULL;
     TAPState *s;
+    int vhostfd;
 
     s = net_tap_fd_init(peer, model, name, fd, vnet_hdr);
     if (!s) {
-        close(fd);
         return -1;
     }
 
@@ -630,19 +637,29 @@ static int net_init_tap_one(const NetdevTapOptions *tap, NetClientState *peer,
 
     if (tap->has_vhost ? tap->vhost :
         vhostfdname || (tap->has_vhostforce && tap->vhostforce)) {
-        int vhostfd;
+        VhostNetOptions options;
+
+        options.backend_type = VHOST_BACKEND_TYPE_KERNEL;
+        options.net_backend = &s->nc;
+        options.force = tap->has_vhostforce && tap->vhostforce;
 
         if (tap->has_vhostfd || tap->has_vhostfds) {
-            vhostfd = monitor_handle_fd_param(cur_mon, vhostfdname);
+            vhostfd = monitor_fd_param(cur_mon, vhostfdname, &err);
             if (vhostfd == -1) {
+                error_report_err(err);
                 return -1;
             }
         } else {
-            vhostfd = -1;
+            vhostfd = open("/dev/vhost-net", O_RDWR);
+            if (vhostfd < 0) {
+                error_report("tap: open vhost char device failed: %s",
+                           strerror(errno));
+                return -1;
+            }
         }
+        options.opaque = (void *)(uintptr_t)vhostfd;
 
-        s->vhost_net = vhost_net_init(&s->nc, vhostfd,
-                                      tap->has_vhostforce && tap->vhostforce);
+        s->vhost_net = vhost_net_init(&options);
         if (!s->vhost_net) {
             error_report("vhost-net requested but could not be initialized");
             return -1;
@@ -689,6 +706,7 @@ int net_init_tap(const NetClientOptions *opts, const char *name,
     /* for the no-fd, no-helper case */
     const char *script = NULL; /* suppress wrong "uninit'd use" gcc warning */
     const char *downscript = NULL;
+    Error *err = NULL;
     const char *vhostfdname;
     char ifname[128];
 
@@ -714,8 +732,9 @@ int net_init_tap(const NetClientOptions *opts, const char *name,
             return -1;
         }
 
-        fd = monitor_handle_fd_param(cur_mon, tap->fd);
+        fd = monitor_fd_param(cur_mon, tap->fd, &err);
         if (fd == -1) {
+            error_report_err(err);
             return -1;
         }
 
@@ -753,8 +772,9 @@ int net_init_tap(const NetClientOptions *opts, const char *name,
         }
 
         for (i = 0; i < nfds; i++) {
-            fd = monitor_handle_fd_param(cur_mon, fds[i]);
+            fd = monitor_fd_param(cur_mon, fds[i], &err);
             if (fd == -1) {
+                error_report_err(err);
                 return -1;
             }
 
@@ -793,6 +813,7 @@ int net_init_tap(const NetClientOptions *opts, const char *name,
         if (net_init_tap_one(tap, peer, "bridge", name, ifname,
                              script, downscript, vhostfdname,
                              vnet_hdr, fd)) {
+            close(fd);
             return -1;
         }
     } else {
@@ -820,6 +841,7 @@ int net_init_tap(const NetClientOptions *opts, const char *name,
             if (queues > 1 && i == 0 && !tap->has_ifname) {
                 if (tap_fd_get_ifname(fd, ifname)) {
                     error_report("Fail to get ifname");
+                    close(fd);
                     return -1;
                 }
             }
@@ -828,6 +850,7 @@ int net_init_tap(const NetClientOptions *opts, const char *name,
                                  i >= 1 ? "no" : script,
                                  i >= 1 ? "no" : downscript,
                                  vhostfdname, vnet_hdr, fd)) {
+                close(fd);
                 return -1;
             }
         }

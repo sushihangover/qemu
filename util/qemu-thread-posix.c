@@ -26,12 +26,20 @@
 #endif
 #include "qemu/thread.h"
 #include "qemu/atomic.h"
+#include "qemu/notify.h"
 
 static bool name_threads;
 
 void qemu_thread_naming(bool enable)
 {
     name_threads = enable;
+
+#ifndef CONFIG_THREAD_SETNAME_BYTHREAD
+    /* This is a debugging option, not fatal */
+    if (enable) {
+        fprintf(stderr, "qemu: thread naming not supported on this host\n");
+    }
+#endif
 }
 
 static void error_exit(int err, const char *msg)
@@ -43,12 +51,8 @@ static void error_exit(int err, const char *msg)
 void qemu_mutex_init(QemuMutex *mutex)
 {
     int err;
-    pthread_mutexattr_t mutexattr;
 
-    pthread_mutexattr_init(&mutexattr);
-    pthread_mutexattr_settype(&mutexattr, PTHREAD_MUTEX_ERRORCHECK);
-    err = pthread_mutex_init(&mutex->lock, &mutexattr);
-    pthread_mutexattr_destroy(&mutexattr);
+    err = pthread_mutex_init(&mutex->lock, NULL);
     if (err)
         error_exit(err, __func__);
 }
@@ -299,11 +303,13 @@ static inline void futex_wait(QemuEvent *ev, unsigned val)
 #else
 static inline void futex_wake(QemuEvent *ev, int n)
 {
+    pthread_mutex_lock(&ev->lock);
     if (n == 1) {
         pthread_cond_signal(&ev->cond);
     } else {
         pthread_cond_broadcast(&ev->cond);
     }
+    pthread_mutex_unlock(&ev->lock);
 }
 
 static inline void futex_wait(QemuEvent *ev, unsigned val)
@@ -394,6 +400,52 @@ void qemu_event_wait(QemuEvent *ev)
     }
 }
 
+static pthread_key_t exit_key;
+
+union NotifierThreadData {
+    void *ptr;
+    NotifierList list;
+};
+QEMU_BUILD_BUG_ON(sizeof(union NotifierThreadData) != sizeof(void *));
+
+void qemu_thread_atexit_add(Notifier *notifier)
+{
+    union NotifierThreadData ntd;
+    ntd.ptr = pthread_getspecific(exit_key);
+    notifier_list_add(&ntd.list, notifier);
+    pthread_setspecific(exit_key, ntd.ptr);
+}
+
+void qemu_thread_atexit_remove(Notifier *notifier)
+{
+    union NotifierThreadData ntd;
+    ntd.ptr = pthread_getspecific(exit_key);
+    notifier_remove(notifier);
+    pthread_setspecific(exit_key, ntd.ptr);
+}
+
+static void qemu_thread_atexit_run(void *arg)
+{
+    union NotifierThreadData ntd = { .ptr = arg };
+    notifier_list_notify(&ntd.list, NULL);
+}
+
+static void __attribute__((constructor)) qemu_thread_atexit_init(void)
+{
+    pthread_key_create(&exit_key, qemu_thread_atexit_run);
+}
+
+
+/* Attempt to set the threads name; note that this is for debug, so
+ * we're not going to fail if we can't set it.
+ */
+static void qemu_thread_set_name(QemuThread *thread, const char *name)
+{
+#ifdef CONFIG_PTHREAD_SETNAME_NP
+    pthread_setname_np(thread->thread, name);
+#endif
+}
+
 void qemu_thread_create(QemuThread *thread, const char *name,
                        void *(*start_routine)(void*),
                        void *arg, int mode)
@@ -420,11 +472,9 @@ void qemu_thread_create(QemuThread *thread, const char *name,
     if (err)
         error_exit(err, __func__);
 
-#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 12))
     if (name_threads) {
-        pthread_setname_np(thread->thread, name);
+        qemu_thread_set_name(thread, name);
     }
-#endif
 
     pthread_sigmask(SIG_SETMASK, &oldset, NULL);
 

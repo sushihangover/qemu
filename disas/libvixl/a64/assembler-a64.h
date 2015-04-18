@@ -28,15 +28,18 @@
 #define VIXL_A64_ASSEMBLER_A64_H_
 
 #include <list>
+#include <stack>
 
 #include "globals.h"
 #include "utils.h"
+#include "code-buffer.h"
 #include "a64/instructions-a64.h"
 
 namespace vixl {
 
 typedef uint64_t RegList;
 static const int kRegListSizeInBits = sizeof(RegList) * 8;
+
 
 // Registers.
 
@@ -58,62 +61,62 @@ class CPURegister {
   };
 
   CPURegister() : code_(0), size_(0), type_(kNoRegister) {
-    ASSERT(!IsValid());
-    ASSERT(IsNone());
+    VIXL_ASSERT(!IsValid());
+    VIXL_ASSERT(IsNone());
   }
 
   CPURegister(unsigned code, unsigned size, RegisterType type)
       : code_(code), size_(size), type_(type) {
-    ASSERT(IsValidOrNone());
+    VIXL_ASSERT(IsValidOrNone());
   }
 
   unsigned code() const {
-    ASSERT(IsValid());
+    VIXL_ASSERT(IsValid());
     return code_;
   }
 
   RegisterType type() const {
-    ASSERT(IsValidOrNone());
+    VIXL_ASSERT(IsValidOrNone());
     return type_;
   }
 
   RegList Bit() const {
-    ASSERT(code_ < (sizeof(RegList) * 8));
+    VIXL_ASSERT(code_ < (sizeof(RegList) * 8));
     return IsValid() ? (static_cast<RegList>(1) << code_) : 0;
   }
 
   unsigned size() const {
-    ASSERT(IsValid());
+    VIXL_ASSERT(IsValid());
     return size_;
   }
 
   int SizeInBytes() const {
-    ASSERT(IsValid());
-    ASSERT(size() % 8 == 0);
+    VIXL_ASSERT(IsValid());
+    VIXL_ASSERT(size() % 8 == 0);
     return size_ / 8;
   }
 
   int SizeInBits() const {
-    ASSERT(IsValid());
+    VIXL_ASSERT(IsValid());
     return size_;
   }
 
   bool Is32Bits() const {
-    ASSERT(IsValid());
+    VIXL_ASSERT(IsValid());
     return size_ == 32;
   }
 
   bool Is64Bits() const {
-    ASSERT(IsValid());
+    VIXL_ASSERT(IsValid());
     return size_ == 64;
   }
 
   bool IsValid() const {
     if (IsValidRegister() || IsValidFPRegister()) {
-      ASSERT(!IsNone());
+      VIXL_ASSERT(!IsNone());
       return true;
     } else {
-      ASSERT(IsNone());
+      VIXL_ASSERT(IsNone());
       return false;
     }
   }
@@ -132,42 +135,51 @@ class CPURegister {
 
   bool IsNone() const {
     // kNoRegister types should always have size 0 and code 0.
-    ASSERT((type_ != kNoRegister) || (code_ == 0));
-    ASSERT((type_ != kNoRegister) || (size_ == 0));
+    VIXL_ASSERT((type_ != kNoRegister) || (code_ == 0));
+    VIXL_ASSERT((type_ != kNoRegister) || (size_ == 0));
 
     return type_ == kNoRegister;
   }
 
-  bool Is(const CPURegister& other) const {
-    ASSERT(IsValidOrNone() && other.IsValidOrNone());
-    return (code_ == other.code_) && (size_ == other.size_) &&
-           (type_ == other.type_);
+  bool Aliases(const CPURegister& other) const {
+    VIXL_ASSERT(IsValidOrNone() && other.IsValidOrNone());
+    return (code_ == other.code_) && (type_ == other.type_);
   }
 
-  inline bool IsZero() const {
-    ASSERT(IsValid());
+  bool Is(const CPURegister& other) const {
+    VIXL_ASSERT(IsValidOrNone() && other.IsValidOrNone());
+    return Aliases(other) && (size_ == other.size_);
+  }
+
+  bool IsZero() const {
+    VIXL_ASSERT(IsValid());
     return IsRegister() && (code_ == kZeroRegCode);
   }
 
-  inline bool IsSP() const {
-    ASSERT(IsValid());
+  bool IsSP() const {
+    VIXL_ASSERT(IsValid());
     return IsRegister() && (code_ == kSPRegInternalCode);
   }
 
-  inline bool IsRegister() const {
+  bool IsRegister() const {
     return type_ == kRegister;
   }
 
-  inline bool IsFPRegister() const {
+  bool IsFPRegister() const {
     return type_ == kFPRegister;
   }
+
+  bool IsW() const { return IsValidRegister() && Is32Bits(); }
+  bool IsX() const { return IsValidRegister() && Is64Bits(); }
+  bool IsS() const { return IsValidFPRegister() && Is32Bits(); }
+  bool IsD() const { return IsValidFPRegister() && Is64Bits(); }
 
   const Register& W() const;
   const Register& X() const;
   const FPRegister& S() const;
   const FPRegister& D() const;
 
-  inline bool IsSameSizeAndType(const CPURegister& other) const {
+  bool IsSameSizeAndType(const CPURegister& other) const {
     return (size_ == other.size_) && (type_ == other.type_);
   }
 
@@ -185,25 +197,21 @@ class CPURegister {
 
 class Register : public CPURegister {
  public:
-  explicit Register() : CPURegister() {}
-  inline explicit Register(const CPURegister& other)
+  Register() : CPURegister() {}
+  explicit Register(const CPURegister& other)
       : CPURegister(other.code(), other.size(), other.type()) {
-    ASSERT(IsValidRegister());
+    VIXL_ASSERT(IsValidRegister());
   }
-  explicit Register(unsigned code, unsigned size)
+  Register(unsigned code, unsigned size)
       : CPURegister(code, size, kRegister) {}
 
   bool IsValid() const {
-    ASSERT(IsRegister() || IsNone());
+    VIXL_ASSERT(IsRegister() || IsNone());
     return IsValidRegister();
   }
 
   static const Register& WRegFromCode(unsigned code);
   static const Register& XRegFromCode(unsigned code);
-
-  // V8 compatibility.
-  static const int kNumRegisters = kNumberOfRegisters;
-  static const int kNumAllocatableRegisters = kNumberOfRegisters - 1;
 
  private:
   static const Register wregisters[];
@@ -213,25 +221,21 @@ class Register : public CPURegister {
 
 class FPRegister : public CPURegister {
  public:
-  inline FPRegister() : CPURegister() {}
-  inline explicit FPRegister(const CPURegister& other)
+  FPRegister() : CPURegister() {}
+  explicit FPRegister(const CPURegister& other)
       : CPURegister(other.code(), other.size(), other.type()) {
-    ASSERT(IsValidFPRegister());
+    VIXL_ASSERT(IsValidFPRegister());
   }
-  inline FPRegister(unsigned code, unsigned size)
+  FPRegister(unsigned code, unsigned size)
       : CPURegister(code, size, kFPRegister) {}
 
   bool IsValid() const {
-    ASSERT(IsFPRegister() || IsNone());
+    VIXL_ASSERT(IsFPRegister() || IsNone());
     return IsValidFPRegister();
   }
 
   static const FPRegister& SRegFromCode(unsigned code);
   static const FPRegister& DRegFromCode(unsigned code);
-
-  // V8 compatibility.
-  static const int kNumRegisters = kNumberOfFPRegisters;
-  static const int kNumAllocatableRegisters = kNumberOfFPRegisters - 1;
 
  private:
   static const FPRegister sregisters[];
@@ -300,36 +304,36 @@ bool AreSameSizeAndType(const CPURegister& reg1,
 // Lists of registers.
 class CPURegList {
  public:
-  inline explicit CPURegList(CPURegister reg1,
-                             CPURegister reg2 = NoCPUReg,
-                             CPURegister reg3 = NoCPUReg,
-                             CPURegister reg4 = NoCPUReg)
+  explicit CPURegList(CPURegister reg1,
+                      CPURegister reg2 = NoCPUReg,
+                      CPURegister reg3 = NoCPUReg,
+                      CPURegister reg4 = NoCPUReg)
       : list_(reg1.Bit() | reg2.Bit() | reg3.Bit() | reg4.Bit()),
         size_(reg1.size()), type_(reg1.type()) {
-    ASSERT(AreSameSizeAndType(reg1, reg2, reg3, reg4));
-    ASSERT(IsValid());
+    VIXL_ASSERT(AreSameSizeAndType(reg1, reg2, reg3, reg4));
+    VIXL_ASSERT(IsValid());
   }
 
-  inline CPURegList(CPURegister::RegisterType type, unsigned size, RegList list)
+  CPURegList(CPURegister::RegisterType type, unsigned size, RegList list)
       : list_(list), size_(size), type_(type) {
-    ASSERT(IsValid());
+    VIXL_ASSERT(IsValid());
   }
 
-  inline CPURegList(CPURegister::RegisterType type, unsigned size,
-                    unsigned first_reg, unsigned last_reg)
+  CPURegList(CPURegister::RegisterType type, unsigned size,
+             unsigned first_reg, unsigned last_reg)
       : size_(size), type_(type) {
-    ASSERT(((type == CPURegister::kRegister) &&
-            (last_reg < kNumberOfRegisters)) ||
-           ((type == CPURegister::kFPRegister) &&
-            (last_reg < kNumberOfFPRegisters)));
-    ASSERT(last_reg >= first_reg);
-    list_ = (1UL << (last_reg + 1)) - 1;
-    list_ &= ~((1UL << first_reg) - 1);
-    ASSERT(IsValid());
+    VIXL_ASSERT(((type == CPURegister::kRegister) &&
+                 (last_reg < kNumberOfRegisters)) ||
+                ((type == CPURegister::kFPRegister) &&
+                 (last_reg < kNumberOfFPRegisters)));
+    VIXL_ASSERT(last_reg >= first_reg);
+    list_ = (UINT64_C(1) << (last_reg + 1)) - 1;
+    list_ &= ~((UINT64_C(1) << first_reg) - 1);
+    VIXL_ASSERT(IsValid());
   }
 
-  inline CPURegister::RegisterType type() const {
-    ASSERT(IsValid());
+  CPURegister::RegisterType type() const {
+    VIXL_ASSERT(IsValid());
     return type_;
   }
 
@@ -337,9 +341,9 @@ class CPURegList {
   // this list are left unchanged. The type and size of the registers in the
   // 'other' list must match those in this list.
   void Combine(const CPURegList& other) {
-    ASSERT(IsValid());
-    ASSERT(other.type() == type_);
-    ASSERT(other.RegisterSizeInBits() == size_);
+    VIXL_ASSERT(IsValid());
+    VIXL_ASSERT(other.type() == type_);
+    VIXL_ASSERT(other.RegisterSizeInBits() == size_);
     list_ |= other.list();
   }
 
@@ -347,42 +351,74 @@ class CPURegList {
   // do not exist in this list are ignored. The type and size of the registers
   // in the 'other' list must match those in this list.
   void Remove(const CPURegList& other) {
-    ASSERT(IsValid());
-    ASSERT(other.type() == type_);
-    ASSERT(other.RegisterSizeInBits() == size_);
+    VIXL_ASSERT(IsValid());
+    VIXL_ASSERT(other.type() == type_);
+    VIXL_ASSERT(other.RegisterSizeInBits() == size_);
     list_ &= ~other.list();
   }
 
   // Variants of Combine and Remove which take a single register.
-  inline void Combine(const CPURegister& other) {
-    ASSERT(other.type() == type_);
-    ASSERT(other.size() == size_);
+  void Combine(const CPURegister& other) {
+    VIXL_ASSERT(other.type() == type_);
+    VIXL_ASSERT(other.size() == size_);
     Combine(other.code());
   }
 
-  inline void Remove(const CPURegister& other) {
-    ASSERT(other.type() == type_);
-    ASSERT(other.size() == size_);
+  void Remove(const CPURegister& other) {
+    VIXL_ASSERT(other.type() == type_);
+    VIXL_ASSERT(other.size() == size_);
     Remove(other.code());
   }
 
   // Variants of Combine and Remove which take a single register by its code;
   // the type and size of the register is inferred from this list.
-  inline void Combine(int code) {
-    ASSERT(IsValid());
-    ASSERT(CPURegister(code, size_, type_).IsValid());
-    list_ |= (1UL << code);
+  void Combine(int code) {
+    VIXL_ASSERT(IsValid());
+    VIXL_ASSERT(CPURegister(code, size_, type_).IsValid());
+    list_ |= (UINT64_C(1) << code);
   }
 
-  inline void Remove(int code) {
-    ASSERT(IsValid());
-    ASSERT(CPURegister(code, size_, type_).IsValid());
-    list_ &= ~(1UL << code);
+  void Remove(int code) {
+    VIXL_ASSERT(IsValid());
+    VIXL_ASSERT(CPURegister(code, size_, type_).IsValid());
+    list_ &= ~(UINT64_C(1) << code);
   }
 
-  inline RegList list() const {
-    ASSERT(IsValid());
+  static CPURegList Union(const CPURegList& list_1, const CPURegList& list_2) {
+    VIXL_ASSERT(list_1.type_ == list_2.type_);
+    VIXL_ASSERT(list_1.size_ == list_2.size_);
+    return CPURegList(list_1.type_, list_1.size_, list_1.list_ | list_2.list_);
+  }
+  static CPURegList Union(const CPURegList& list_1,
+                          const CPURegList& list_2,
+                          const CPURegList& list_3);
+  static CPURegList Union(const CPURegList& list_1,
+                          const CPURegList& list_2,
+                          const CPURegList& list_3,
+                          const CPURegList& list_4);
+
+  static CPURegList Intersection(const CPURegList& list_1,
+                                 const CPURegList& list_2) {
+    VIXL_ASSERT(list_1.type_ == list_2.type_);
+    VIXL_ASSERT(list_1.size_ == list_2.size_);
+    return CPURegList(list_1.type_, list_1.size_, list_1.list_ & list_2.list_);
+  }
+  static CPURegList Intersection(const CPURegList& list_1,
+                                 const CPURegList& list_2,
+                                 const CPURegList& list_3);
+  static CPURegList Intersection(const CPURegList& list_1,
+                                 const CPURegList& list_2,
+                                 const CPURegList& list_3,
+                                 const CPURegList& list_4);
+
+  RegList list() const {
+    VIXL_ASSERT(IsValid());
     return list_;
+  }
+
+  void set_list(RegList new_list) {
+    VIXL_ASSERT(IsValid());
+    list_ = new_list;
   }
 
   // Remove all callee-saved registers from the list. This can be useful when
@@ -400,30 +436,40 @@ class CPURegList {
   static CPURegList GetCallerSaved(unsigned size = kXRegSize);
   static CPURegList GetCallerSavedFP(unsigned size = kDRegSize);
 
-  inline bool IsEmpty() const {
-    ASSERT(IsValid());
+  bool IsEmpty() const {
+    VIXL_ASSERT(IsValid());
     return list_ == 0;
   }
 
-  inline bool IncludesAliasOf(const CPURegister& other) const {
-    ASSERT(IsValid());
-    return (type_ == other.type()) && (other.Bit() & list_);
+  bool IncludesAliasOf(const CPURegister& other) const {
+    VIXL_ASSERT(IsValid());
+    return (type_ == other.type()) && ((other.Bit() & list_) != 0);
   }
 
-  inline int Count() const {
-    ASSERT(IsValid());
+  bool IncludesAliasOf(int code) const {
+    VIXL_ASSERT(IsValid());
+    return ((code & list_) != 0);
+  }
+
+  int Count() const {
+    VIXL_ASSERT(IsValid());
     return CountSetBits(list_, kRegListSizeInBits);
   }
 
-  inline unsigned RegisterSizeInBits() const {
-    ASSERT(IsValid());
+  unsigned RegisterSizeInBits() const {
+    VIXL_ASSERT(IsValid());
     return size_;
   }
 
-  inline unsigned RegisterSizeInBytes() const {
+  unsigned RegisterSizeInBytes() const {
     int size_in_bits = RegisterSizeInBits();
-    ASSERT((size_in_bits % 8) == 0);
+    VIXL_ASSERT((size_in_bits % 8) == 0);
     return size_in_bits / 8;
+  }
+
+  unsigned TotalSizeInBytes() const {
+    VIXL_ASSERT(IsValid());
+    return RegisterSizeInBytes() * Count();
   }
 
  private:
@@ -471,33 +517,34 @@ class Operand {
   bool IsImmediate() const;
   bool IsShiftedRegister() const;
   bool IsExtendedRegister() const;
+  bool IsZero() const;
 
   // This returns an LSL shift (<= 4) operand as an equivalent extend operand,
   // which helps in the encoding of instructions that use the stack pointer.
   Operand ToExtendedRegister() const;
 
   int64_t immediate() const {
-    ASSERT(IsImmediate());
+    VIXL_ASSERT(IsImmediate());
     return immediate_;
   }
 
   Register reg() const {
-    ASSERT(IsShiftedRegister() || IsExtendedRegister());
+    VIXL_ASSERT(IsShiftedRegister() || IsExtendedRegister());
     return reg_;
   }
 
   Shift shift() const {
-    ASSERT(IsShiftedRegister());
+    VIXL_ASSERT(IsShiftedRegister());
     return shift_;
   }
 
   Extend extend() const {
-    ASSERT(IsExtendedRegister());
+    VIXL_ASSERT(IsExtendedRegister());
     return extend_;
   }
 
   unsigned shift_amount() const {
-    ASSERT(IsShiftedRegister() || IsExtendedRegister());
+    VIXL_ASSERT(IsShiftedRegister() || IsExtendedRegister());
     return shift_amount_;
   }
 
@@ -514,7 +561,7 @@ class Operand {
 class MemOperand {
  public:
   explicit MemOperand(Register base,
-                      ptrdiff_t offset = 0,
+                      int64_t offset = 0,
                       AddrMode addrmode = Offset);
   explicit MemOperand(Register base,
                       Register regoffset,
@@ -530,7 +577,7 @@ class MemOperand {
 
   const Register& base() const { return base_; }
   const Register& regoffset() const { return regoffset_; }
-  ptrdiff_t offset() const { return offset_; }
+  int64_t offset() const { return offset_; }
   AddrMode addrmode() const { return addrmode_; }
   Shift shift() const { return shift_; }
   Extend extend() const { return extend_; }
@@ -543,7 +590,7 @@ class MemOperand {
  private:
   Register base_;
   Register regoffset_;
-  ptrdiff_t offset_;
+  int64_t offset_;
   AddrMode addrmode_;
   Shift shift_;
   Extend extend_;
@@ -553,71 +600,233 @@ class MemOperand {
 
 class Label {
  public:
-  Label() : is_bound_(false), link_(NULL), target_(NULL) {}
+  Label() : location_(kLocationUnbound) {}
   ~Label() {
     // If the label has been linked to, it needs to be bound to a target.
-    ASSERT(!IsLinked() || IsBound());
+    VIXL_ASSERT(!IsLinked() || IsBound());
   }
 
-  inline Instruction* link() const { return link_; }
-  inline Instruction* target() const { return target_; }
+  bool IsBound() const { return location_ >= 0; }
+  bool IsLinked() const { return !links_.empty(); }
 
-  inline bool IsBound() const { return is_bound_; }
-  inline bool IsLinked() const { return link_ != NULL; }
-
-  inline void set_link(Instruction* new_link) { link_ = new_link; }
-
-  static const int kEndOfChain = 0;
+  ptrdiff_t location() const { return location_; }
 
  private:
-  // Indicates if the label has been bound, ie its location is fixed.
-  bool is_bound_;
-  // Branches instructions branching to this label form a chained list, with
-  // their offset indicating where the next instruction is located.
-  // link_ points to the latest branch instruction generated branching to this
-  // branch.
-  // If link_ is not NULL, the label has been linked to.
-  Instruction* link_;
+  // The list of linked instructions is stored in a stack-like structure. We
+  // don't use std::stack directly because it's slow for the common case where
+  // only one or two instructions refer to a label, and labels themselves are
+  // short-lived. This class behaves like std::stack, but the first few links
+  // are preallocated (configured by kPreallocatedLinks).
+  //
+  // If more than N links are required, this falls back to std::stack.
+  class LinksStack {
+   public:
+    LinksStack() : size_(0), links_extended_(NULL) {}
+    ~LinksStack() {
+      delete links_extended_;
+    }
+
+    size_t size() const {
+      return size_;
+    }
+
+    bool empty() const {
+      return size_ == 0;
+    }
+
+    void push(ptrdiff_t value) {
+      if (size_ < kPreallocatedLinks) {
+        links_[size_] = value;
+      } else {
+        if (links_extended_ == NULL) {
+          links_extended_ = new std::stack<ptrdiff_t>();
+        }
+        VIXL_ASSERT(size_ == (links_extended_->size() + kPreallocatedLinks));
+        links_extended_->push(value);
+      }
+      size_++;
+    }
+
+    ptrdiff_t top() const {
+      return (size_ <= kPreallocatedLinks) ? links_[size_ - 1]
+                                           : links_extended_->top();
+    }
+
+    void pop() {
+      size_--;
+      if (size_ >= kPreallocatedLinks) {
+        links_extended_->pop();
+        VIXL_ASSERT(size_ == (links_extended_->size() + kPreallocatedLinks));
+      }
+    }
+
+   private:
+    static const size_t kPreallocatedLinks = 4;
+
+    size_t size_;
+    ptrdiff_t links_[kPreallocatedLinks];
+    std::stack<ptrdiff_t> * links_extended_;
+  };
+
+  void Bind(ptrdiff_t location) {
+    // Labels can only be bound once.
+    VIXL_ASSERT(!IsBound());
+    location_ = location;
+  }
+
+  void AddLink(ptrdiff_t instruction) {
+    // If a label is bound, the assembler already has the information it needs
+    // to write the instruction, so there is no need to add it to links_.
+    VIXL_ASSERT(!IsBound());
+    links_.push(instruction);
+  }
+
+  ptrdiff_t GetAndRemoveNextLink() {
+    VIXL_ASSERT(IsLinked());
+    ptrdiff_t link = links_.top();
+    links_.pop();
+    return link;
+  }
+
+  // The offsets of the instructions that have linked to this label.
+  LinksStack links_;
   // The label location.
-  Instruction* target_;
+  ptrdiff_t location_;
 
+  static const ptrdiff_t kLocationUnbound = -1;
+
+  // It is not safe to copy labels, so disable the copy constructor by declaring
+  // it private (without an implementation).
+  Label(const Label&);
+
+  // The Assembler class is responsible for binding and linking labels, since
+  // the stored offsets need to be consistent with the Assembler's buffer.
   friend class Assembler;
 };
 
 
-// TODO: Obtain better values for these, based on real-world data.
-const int kLiteralPoolCheckInterval = 4 * KBytes;
-const int kRecommendedLiteralPoolRange = 2 * kLiteralPoolCheckInterval;
-
-
-// Control whether a branch over the literal pool should also be emitted. This
-// is needed if the literal pool has to be emitted in the middle of the JITted
-// code.
-enum LiteralPoolEmitOption {
-  JumpRequired,
-  NoJumpRequired
-};
-
-
-// Literal pool entry.
-class Literal {
+// A literal is a 32-bit or 64-bit piece of data stored in the instruction
+// stream and loaded through a pc relative load. The same literal can be
+// referred to by multiple instructions but a literal can only reside at one
+// place in memory. A literal can be used by a load before or after being
+// placed in memory.
+//
+// Internally an offset of 0 is associated with a literal which has been
+// neither used nor placed. Then two possibilities arise:
+//  1) the label is placed, the offset (stored as offset + 1) is used to
+//     resolve any subsequent load using the label.
+//  2) the label is not placed and offset is the offset of the last load using
+//     the literal (stored as -offset -1). If multiple loads refer to this
+//     literal then the last load holds the offset of the preceding load and
+//     all loads form a chain. Once the offset is placed all the loads in the
+//     chain are resolved and future loads fall back to possibility 1.
+class RawLiteral {
  public:
-  Literal(Instruction* pc, uint64_t imm, unsigned size)
-      : pc_(pc), value_(imm), size_(size) {}
+  RawLiteral() : size_(0), offset_(0), raw_value_(0) {}
 
- private:
-  Instruction* pc_;
-  int64_t value_;
-  unsigned size_;
+  size_t size() {
+    VIXL_STATIC_ASSERT(kDRegSizeInBytes == kXRegSizeInBytes);
+    VIXL_STATIC_ASSERT(kSRegSizeInBytes == kWRegSizeInBytes);
+    VIXL_ASSERT((size_ == kXRegSizeInBytes) || (size_ == kWRegSizeInBytes));
+    return size_;
+  }
+  uint64_t raw_value64() {
+    VIXL_ASSERT(size_ == kXRegSizeInBytes);
+    return raw_value_;
+  }
+  uint32_t raw_value32() {
+    VIXL_ASSERT(size_ == kWRegSizeInBytes);
+    VIXL_ASSERT(is_uint32(raw_value_) || is_int32(raw_value_));
+    return static_cast<uint32_t>(raw_value_);
+  }
+  bool IsUsed() { return offset_ < 0; }
+  bool IsPlaced() { return offset_ > 0; }
+
+ protected:
+  ptrdiff_t offset() {
+    VIXL_ASSERT(IsPlaced());
+    return offset_ - 1;
+  }
+  void set_offset(ptrdiff_t offset) {
+    VIXL_ASSERT(offset >= 0);
+    VIXL_ASSERT(IsWordAligned(offset));
+    VIXL_ASSERT(!IsPlaced());
+    offset_ = offset + 1;
+  }
+  ptrdiff_t last_use() {
+    VIXL_ASSERT(IsUsed());
+    return -offset_ - 1;
+  }
+  void set_last_use(ptrdiff_t offset) {
+    VIXL_ASSERT(offset >= 0);
+    VIXL_ASSERT(IsWordAligned(offset));
+    VIXL_ASSERT(!IsPlaced());
+    offset_ = -offset - 1;
+  }
+
+  size_t size_;
+  ptrdiff_t offset_;
+  uint64_t raw_value_;
 
   friend class Assembler;
+};
+
+
+template <typename T>
+class Literal : public RawLiteral {
+ public:
+  explicit Literal(T value) {
+    size_ = sizeof(value);
+    memcpy(&raw_value_, &value, sizeof(value));
+  }
+};
+
+
+// Control whether or not position-independent code should be emitted.
+enum PositionIndependentCodeOption {
+  // All code generated will be position-independent; all branches and
+  // references to labels generated with the Label class will use PC-relative
+  // addressing.
+  PositionIndependentCode,
+
+  // Allow VIXL to generate code that refers to absolute addresses. With this
+  // option, it will not be possible to copy the code buffer and run it from a
+  // different address; code must be generated in its final location.
+  PositionDependentCode,
+
+  // Allow VIXL to assume that the bottom 12 bits of the address will be
+  // constant, but that the top 48 bits may change. This allows `adrp` to
+  // function in systems which copy code between pages, but otherwise maintain
+  // 4KB page alignment.
+  PageOffsetDependentCode
+};
+
+
+// Control how scaled- and unscaled-offset loads and stores are generated.
+enum LoadStoreScalingOption {
+  // Prefer scaled-immediate-offset instructions, but emit unscaled-offset,
+  // register-offset, pre-index or post-index instructions if necessary.
+  PreferScaledOffset,
+
+  // Prefer unscaled-immediate-offset instructions, but emit scaled-offset,
+  // register-offset, pre-index or post-index instructions if necessary.
+  PreferUnscaledOffset,
+
+  // Require scaled-immediate-offset instructions.
+  RequireScaledOffset,
+
+  // Require unscaled-immediate-offset instructions.
+  RequireUnscaledOffset
 };
 
 
 // Assembler.
 class Assembler {
  public:
-  Assembler(byte* buffer, unsigned buffer_size);
+  Assembler(size_t capacity,
+            PositionIndependentCodeOption pic = PositionIndependentCode);
+  Assembler(byte* buffer, size_t capacity,
+            PositionIndependentCodeOption pic = PositionIndependentCode);
 
   // The destructor asserts that one of the following is true:
   //  * The Assembler object has not been used.
@@ -629,9 +838,6 @@ class Assembler {
 
   // Start generating code from the beginning of the buffer, discarding any code
   // and data that has already been emitted into the buffer.
-  //
-  // In order to avoid any accidental transfer of state, Reset ASSERTs that the
-  // constant pool is not blocked.
   void Reset();
 
   // Finalize a code buffer of generated instructions. This function must be
@@ -641,12 +847,49 @@ class Assembler {
   // Label.
   // Bind a label to the current PC.
   void bind(Label* label);
-  int UpdateAndGetByteOffsetTo(Label* label);
-  inline int UpdateAndGetInstructionOffsetTo(Label* label) {
-    ASSERT(Label::kEndOfChain == 0);
-    return UpdateAndGetByteOffsetTo(label) >> kInstructionSizeLog2;
+
+  // Bind a label to a specified offset from the start of the buffer.
+  void BindToOffset(Label* label, ptrdiff_t offset);
+
+  // Place a literal at the current PC.
+  void place(RawLiteral* literal);
+
+  ptrdiff_t CursorOffset() const {
+    return buffer_->CursorOffset();
   }
 
+  ptrdiff_t BufferEndOffset() const {
+    return static_cast<ptrdiff_t>(buffer_->capacity());
+  }
+
+  // Return the address of an offset in the buffer.
+  template <typename T>
+  T GetOffsetAddress(ptrdiff_t offset) {
+    VIXL_STATIC_ASSERT(sizeof(T) >= sizeof(uintptr_t));
+    return buffer_->GetOffsetAddress<T>(offset);
+  }
+
+  // Return the address of a bound label.
+  template <typename T>
+  T GetLabelAddress(const Label * label) {
+    VIXL_ASSERT(label->IsBound());
+    VIXL_STATIC_ASSERT(sizeof(T) >= sizeof(uintptr_t));
+    return GetOffsetAddress<T>(label->location());
+  }
+
+  // Return the address of the cursor.
+  template <typename T>
+  T GetCursorAddress() {
+    VIXL_STATIC_ASSERT(sizeof(T) >= sizeof(uintptr_t));
+    return GetOffsetAddress<T>(CursorOffset());
+  }
+
+  // Return the address of the start of the buffer.
+  template <typename T>
+  T GetStartAddress() {
+    VIXL_STATIC_ASSERT(sizeof(T) >= sizeof(uintptr_t));
+    return GetOffsetAddress<T>(0);
+  }
 
   // Instruction set functions.
 
@@ -712,12 +955,22 @@ class Assembler {
   // Calculate the address of a PC offset.
   void adr(const Register& rd, int imm21);
 
+  // Calculate the page address of a label.
+  void adrp(const Register& rd, Label* label);
+
+  // Calculate the page address of a PC offset.
+  void adrp(const Register& rd, int imm21);
+
   // Data Processing instructions.
   // Add.
   void add(const Register& rd,
            const Register& rn,
-           const Operand& operand,
-           FlagsUpdate S = LeaveFlags);
+           const Operand& operand);
+
+  // Add and update status flags.
+  void adds(const Register& rd,
+            const Register& rn,
+            const Operand& operand);
 
   // Compare negative.
   void cmn(const Register& rn, const Operand& operand);
@@ -725,40 +978,62 @@ class Assembler {
   // Subtract.
   void sub(const Register& rd,
            const Register& rn,
-           const Operand& operand,
-           FlagsUpdate S = LeaveFlags);
+           const Operand& operand);
+
+  // Subtract and update status flags.
+  void subs(const Register& rd,
+            const Register& rn,
+            const Operand& operand);
 
   // Compare.
   void cmp(const Register& rn, const Operand& operand);
 
   // Negate.
   void neg(const Register& rd,
-           const Operand& operand,
-           FlagsUpdate S = LeaveFlags);
+           const Operand& operand);
+
+  // Negate and update status flags.
+  void negs(const Register& rd,
+            const Operand& operand);
 
   // Add with carry bit.
   void adc(const Register& rd,
            const Register& rn,
-           const Operand& operand,
-           FlagsUpdate S = LeaveFlags);
+           const Operand& operand);
+
+  // Add with carry bit and update status flags.
+  void adcs(const Register& rd,
+            const Register& rn,
+            const Operand& operand);
 
   // Subtract with carry bit.
   void sbc(const Register& rd,
            const Register& rn,
-           const Operand& operand,
-           FlagsUpdate S = LeaveFlags);
+           const Operand& operand);
+
+  // Subtract with carry bit and update status flags.
+  void sbcs(const Register& rd,
+            const Register& rn,
+            const Operand& operand);
 
   // Negate with carry bit.
   void ngc(const Register& rd,
-           const Operand& operand,
-           FlagsUpdate S = LeaveFlags);
+           const Operand& operand);
+
+  // Negate with carry bit and update status flags.
+  void ngcs(const Register& rd,
+            const Operand& operand);
 
   // Logical instructions.
   // Bitwise and (A & B).
   void and_(const Register& rd,
             const Register& rn,
-            const Operand& operand,
-            FlagsUpdate S = LeaveFlags);
+            const Operand& operand);
+
+  // Bitwise and (A & B) and update status flags.
+  void ands(const Register& rd,
+            const Register& rn,
+            const Operand& operand);
 
   // Bit test and set flags.
   void tst(const Register& rn, const Operand& operand);
@@ -766,8 +1041,12 @@ class Assembler {
   // Bit clear (A & ~B).
   void bic(const Register& rd,
            const Register& rn,
-           const Operand& operand,
-           FlagsUpdate S = LeaveFlags);
+           const Operand& operand);
+
+  // Bit clear (A & ~B) and update status flags.
+  void bics(const Register& rd,
+            const Register& rn,
+            const Operand& operand);
 
   // Bitwise or (A | B).
   void orr(const Register& rd, const Register& rn, const Operand& operand);
@@ -814,113 +1093,113 @@ class Assembler {
 
   // Bfm aliases.
   // Bitfield insert.
-  inline void bfi(const Register& rd,
-                  const Register& rn,
-                  unsigned lsb,
-                  unsigned width) {
-    ASSERT(width >= 1);
-    ASSERT(lsb + width <= rn.size());
+  void bfi(const Register& rd,
+           const Register& rn,
+           unsigned lsb,
+           unsigned width) {
+    VIXL_ASSERT(width >= 1);
+    VIXL_ASSERT(lsb + width <= rn.size());
     bfm(rd, rn, (rd.size() - lsb) & (rd.size() - 1), width - 1);
   }
 
   // Bitfield extract and insert low.
-  inline void bfxil(const Register& rd,
-                    const Register& rn,
-                    unsigned lsb,
-                    unsigned width) {
-    ASSERT(width >= 1);
-    ASSERT(lsb + width <= rn.size());
+  void bfxil(const Register& rd,
+             const Register& rn,
+             unsigned lsb,
+             unsigned width) {
+    VIXL_ASSERT(width >= 1);
+    VIXL_ASSERT(lsb + width <= rn.size());
     bfm(rd, rn, lsb, lsb + width - 1);
   }
 
   // Sbfm aliases.
   // Arithmetic shift right.
-  inline void asr(const Register& rd, const Register& rn, unsigned shift) {
-    ASSERT(shift < rd.size());
+  void asr(const Register& rd, const Register& rn, unsigned shift) {
+    VIXL_ASSERT(shift < rd.size());
     sbfm(rd, rn, shift, rd.size() - 1);
   }
 
   // Signed bitfield insert with zero at right.
-  inline void sbfiz(const Register& rd,
-                    const Register& rn,
-                    unsigned lsb,
-                    unsigned width) {
-    ASSERT(width >= 1);
-    ASSERT(lsb + width <= rn.size());
+  void sbfiz(const Register& rd,
+             const Register& rn,
+             unsigned lsb,
+             unsigned width) {
+    VIXL_ASSERT(width >= 1);
+    VIXL_ASSERT(lsb + width <= rn.size());
     sbfm(rd, rn, (rd.size() - lsb) & (rd.size() - 1), width - 1);
   }
 
   // Signed bitfield extract.
-  inline void sbfx(const Register& rd,
-                   const Register& rn,
-                   unsigned lsb,
-                   unsigned width) {
-    ASSERT(width >= 1);
-    ASSERT(lsb + width <= rn.size());
+  void sbfx(const Register& rd,
+            const Register& rn,
+            unsigned lsb,
+            unsigned width) {
+    VIXL_ASSERT(width >= 1);
+    VIXL_ASSERT(lsb + width <= rn.size());
     sbfm(rd, rn, lsb, lsb + width - 1);
   }
 
   // Signed extend byte.
-  inline void sxtb(const Register& rd, const Register& rn) {
+  void sxtb(const Register& rd, const Register& rn) {
     sbfm(rd, rn, 0, 7);
   }
 
   // Signed extend halfword.
-  inline void sxth(const Register& rd, const Register& rn) {
+  void sxth(const Register& rd, const Register& rn) {
     sbfm(rd, rn, 0, 15);
   }
 
   // Signed extend word.
-  inline void sxtw(const Register& rd, const Register& rn) {
+  void sxtw(const Register& rd, const Register& rn) {
     sbfm(rd, rn, 0, 31);
   }
 
   // Ubfm aliases.
   // Logical shift left.
-  inline void lsl(const Register& rd, const Register& rn, unsigned shift) {
+  void lsl(const Register& rd, const Register& rn, unsigned shift) {
     unsigned reg_size = rd.size();
-    ASSERT(shift < reg_size);
+    VIXL_ASSERT(shift < reg_size);
     ubfm(rd, rn, (reg_size - shift) % reg_size, reg_size - shift - 1);
   }
 
   // Logical shift right.
-  inline void lsr(const Register& rd, const Register& rn, unsigned shift) {
-    ASSERT(shift < rd.size());
+  void lsr(const Register& rd, const Register& rn, unsigned shift) {
+    VIXL_ASSERT(shift < rd.size());
     ubfm(rd, rn, shift, rd.size() - 1);
   }
 
   // Unsigned bitfield insert with zero at right.
-  inline void ubfiz(const Register& rd,
-                    const Register& rn,
-                    unsigned lsb,
-                    unsigned width) {
-    ASSERT(width >= 1);
-    ASSERT(lsb + width <= rn.size());
+  void ubfiz(const Register& rd,
+             const Register& rn,
+             unsigned lsb,
+             unsigned width) {
+    VIXL_ASSERT(width >= 1);
+    VIXL_ASSERT(lsb + width <= rn.size());
     ubfm(rd, rn, (rd.size() - lsb) & (rd.size() - 1), width - 1);
   }
 
   // Unsigned bitfield extract.
-  inline void ubfx(const Register& rd,
-                   const Register& rn,
-                   unsigned lsb,
-                   unsigned width) {
-    ASSERT(width >= 1);
-    ASSERT(lsb + width <= rn.size());
+  void ubfx(const Register& rd,
+            const Register& rn,
+            unsigned lsb,
+            unsigned width) {
+    VIXL_ASSERT(width >= 1);
+    VIXL_ASSERT(lsb + width <= rn.size());
     ubfm(rd, rn, lsb, lsb + width - 1);
   }
 
   // Unsigned extend byte.
-  inline void uxtb(const Register& rd, const Register& rn) {
+  void uxtb(const Register& rd, const Register& rn) {
     ubfm(rd, rn, 0, 7);
   }
 
   // Unsigned extend halfword.
-  inline void uxth(const Register& rd, const Register& rn) {
+  void uxth(const Register& rd, const Register& rn) {
     ubfm(rd, rn, 0, 15);
   }
 
   // Unsigned extend word.
-  inline void uxtw(const Register& rd, const Register& rn) {
+  void uxtw(const Register& rd, const Register& rn) {
     ubfm(rd, rn, 0, 31);
   }
 
@@ -970,7 +1249,7 @@ class Assembler {
   void cneg(const Register& rd, const Register& rn, Condition cond);
 
   // Rotate right.
-  inline void ror(const Register& rd, const Register& rs, unsigned shift) {
+  void ror(const Register& rd, const Register& rs, unsigned shift) {
     extr(rd, rs, rs, shift);
   }
 
@@ -1061,31 +1340,76 @@ class Assembler {
 
   // Memory instructions.
   // Load integer or FP register.
-  void ldr(const CPURegister& rt, const MemOperand& src);
+  void ldr(const CPURegister& rt, const MemOperand& src,
+           LoadStoreScalingOption option = PreferScaledOffset);
 
   // Store integer or FP register.
-  void str(const CPURegister& rt, const MemOperand& dst);
+  void str(const CPURegister& rt, const MemOperand& dst,
+           LoadStoreScalingOption option = PreferScaledOffset);
 
   // Load word with sign extension.
-  void ldrsw(const Register& rt, const MemOperand& src);
+  void ldrsw(const Register& rt, const MemOperand& src,
+             LoadStoreScalingOption option = PreferScaledOffset);
 
   // Load byte.
-  void ldrb(const Register& rt, const MemOperand& src);
+  void ldrb(const Register& rt, const MemOperand& src,
+            LoadStoreScalingOption option = PreferScaledOffset);
 
   // Store byte.
-  void strb(const Register& rt, const MemOperand& dst);
+  void strb(const Register& rt, const MemOperand& dst,
+            LoadStoreScalingOption option = PreferScaledOffset);
 
   // Load byte with sign extension.
-  void ldrsb(const Register& rt, const MemOperand& src);
+  void ldrsb(const Register& rt, const MemOperand& src,
+             LoadStoreScalingOption option = PreferScaledOffset);
 
   // Load half-word.
-  void ldrh(const Register& rt, const MemOperand& src);
+  void ldrh(const Register& rt, const MemOperand& src,
+            LoadStoreScalingOption option = PreferScaledOffset);
 
   // Store half-word.
-  void strh(const Register& rt, const MemOperand& dst);
+  void strh(const Register& rt, const MemOperand& dst,
+            LoadStoreScalingOption option = PreferScaledOffset);
 
   // Load half-word with sign extension.
-  void ldrsh(const Register& rt, const MemOperand& src);
+  void ldrsh(const Register& rt, const MemOperand& src,
+             LoadStoreScalingOption option = PreferScaledOffset);
+
+  // Load integer or FP register (with unscaled offset).
+  void ldur(const CPURegister& rt, const MemOperand& src,
+            LoadStoreScalingOption option = PreferUnscaledOffset);
+
+  // Store integer or FP register (with unscaled offset).
+  void stur(const CPURegister& rt, const MemOperand& src,
+            LoadStoreScalingOption option = PreferUnscaledOffset);
+
+  // Load word with sign extension.
+  void ldursw(const Register& rt, const MemOperand& src,
+              LoadStoreScalingOption option = PreferUnscaledOffset);
+
+  // Load byte (with unscaled offset).
+  void ldurb(const Register& rt, const MemOperand& src,
+             LoadStoreScalingOption option = PreferUnscaledOffset);
+
+  // Store byte (with unscaled offset).
+  void sturb(const Register& rt, const MemOperand& dst,
+             LoadStoreScalingOption option = PreferUnscaledOffset);
+
+  // Load byte with sign extension (and unscaled offset).
+  void ldursb(const Register& rt, const MemOperand& src,
+              LoadStoreScalingOption option = PreferUnscaledOffset);
+
+  // Load half-word (with unscaled offset).
+  void ldurh(const Register& rt, const MemOperand& src,
+             LoadStoreScalingOption option = PreferUnscaledOffset);
+
+  // Store half-word (with unscaled offset).
+  void sturh(const Register& rt, const MemOperand& dst,
+             LoadStoreScalingOption option = PreferUnscaledOffset);
+
+  // Load half-word with sign extension (and unscaled offset).
+  void ldursh(const Register& rt, const MemOperand& src,
+              LoadStoreScalingOption option = PreferUnscaledOffset);
 
   // Load integer or FP register pair.
   void ldp(const CPURegister& rt, const CPURegister& rt2,
@@ -1106,11 +1430,103 @@ class Assembler {
   void stnp(const CPURegister& rt, const CPURegister& rt2,
             const MemOperand& dst);
 
-  // Load literal to register.
-  void ldr(const Register& rt, uint64_t imm);
+  // Load integer or FP register from literal pool.
+  void ldr(const CPURegister& rt, RawLiteral* literal);
 
-  // Load literal to FP register.
-  void ldr(const FPRegister& ft, double imm);
+  // Load word with sign extension from literal pool.
+  void ldrsw(const Register& rt, RawLiteral* literal);
+
+  // Load integer or FP register from pc + imm19 << 2.
+  void ldr(const CPURegister& rt, int imm19);
+
+  // Load word with sign extension from pc + imm19 << 2.
+  void ldrsw(const Register& rt, int imm19);
+
+  // Store exclusive byte.
+  void stxrb(const Register& rs, const Register& rt, const MemOperand& dst);
+
+  // Store exclusive half-word.
+  void stxrh(const Register& rs, const Register& rt, const MemOperand& dst);
+
+  // Store exclusive register.
+  void stxr(const Register& rs, const Register& rt, const MemOperand& dst);
+
+  // Load exclusive byte.
+  void ldxrb(const Register& rt, const MemOperand& src);
+
+  // Load exclusive half-word.
+  void ldxrh(const Register& rt, const MemOperand& src);
+
+  // Load exclusive register.
+  void ldxr(const Register& rt, const MemOperand& src);
+
+  // Store exclusive register pair.
+  void stxp(const Register& rs,
+            const Register& rt,
+            const Register& rt2,
+            const MemOperand& dst);
+
+  // Load exclusive register pair.
+  void ldxp(const Register& rt, const Register& rt2, const MemOperand& src);
+
+  // Store-release exclusive byte.
+  void stlxrb(const Register& rs, const Register& rt, const MemOperand& dst);
+
+  // Store-release exclusive half-word.
+  void stlxrh(const Register& rs, const Register& rt, const MemOperand& dst);
+
+  // Store-release exclusive register.
+  void stlxr(const Register& rs, const Register& rt, const MemOperand& dst);
+
+  // Load-acquire exclusive byte.
+  void ldaxrb(const Register& rt, const MemOperand& src);
+
+  // Load-acquire exclusive half-word.
+  void ldaxrh(const Register& rt, const MemOperand& src);
+
+  // Load-acquire exclusive register.
+  void ldaxr(const Register& rt, const MemOperand& src);
+
+  // Store-release exclusive register pair.
+  void stlxp(const Register& rs,
+             const Register& rt,
+             const Register& rt2,
+             const MemOperand& dst);
+
+  // Load-acquire exclusive register pair.
+  void ldaxp(const Register& rt, const Register& rt2, const MemOperand& src);
+
+  // Store-release byte.
+  void stlrb(const Register& rt, const MemOperand& dst);
+
+  // Store-release half-word.
+  void stlrh(const Register& rt, const MemOperand& dst);
+
+  // Store-release register.
+  void stlr(const Register& rt, const MemOperand& dst);
+
+  // Load-acquire byte.
+  void ldarb(const Register& rt, const MemOperand& src);
+
+  // Load-acquire half-word.
+  void ldarh(const Register& rt, const MemOperand& src);
+
+  // Load-acquire register.
+  void ldar(const Register& rt, const MemOperand& src);
+
+  // Prefetch memory.
+  void prfm(PrefetchOperation op, const MemOperand& addr,
+            LoadStoreScalingOption option = PreferScaledOffset);
+
+  // Prefetch memory (with unscaled offset).
+  void prfum(PrefetchOperation op, const MemOperand& addr,
+             LoadStoreScalingOption option = PreferUnscaledOffset);
+
+  // Prefetch memory in the literal pool.
+  void prfm(PrefetchOperation op, RawLiteral* literal);
+
+  // Prefetch from pc + imm19 << 2.
+  void prfm(PrefetchOperation op, int imm19);
 
   // Move instructions. The default shift of -1 indicates that the move
   // instruction will calculate an appropriate 16-bit immediate and left shift
@@ -1160,6 +1576,18 @@ class Assembler {
   // System hint.
   void hint(SystemHint code);
 
+  // Clear exclusive monitor.
+  void clrex(int imm4 = 0xf);
+
+  // Data memory barrier.
+  void dmb(BarrierDomain domain, BarrierType type);
+
+  // Data synchronization barrier.
+  void dsb(BarrierDomain domain, BarrierType type);
+
+  // Instruction synchronization barrier.
+  void isb();
+
   // Alias for system instructions.
   // No-op.
   void nop() {
@@ -1167,17 +1595,20 @@ class Assembler {
   }
 
   // FP instructions.
-  // Move immediate to FP register.
-  void fmov(FPRegister fd, double imm);
+  // Move double precision immediate to FP register.
+  void fmov(const FPRegister& fd, double imm);
+
+  // Move single precision immediate to FP register.
+  void fmov(const FPRegister& fd, float imm);
 
   // Move FP register to register.
-  void fmov(Register rd, FPRegister fn);
+  void fmov(const Register& rd, const FPRegister& fn);
 
   // Move register to FP register.
-  void fmov(FPRegister fd, Register rn);
+  void fmov(const FPRegister& fd, const Register& rn);
 
   // Move FP register to FP register.
-  void fmov(FPRegister fd, FPRegister fn);
+  void fmov(const FPRegister& fd, const FPRegister& fn);
 
   // FP add.
   void fadd(const FPRegister& fd, const FPRegister& fn, const FPRegister& fm);
@@ -1188,11 +1619,29 @@ class Assembler {
   // FP multiply.
   void fmul(const FPRegister& fd, const FPRegister& fn, const FPRegister& fm);
 
-  // FP multiply and subtract.
+  // FP fused multiply and add.
+  void fmadd(const FPRegister& fd,
+             const FPRegister& fn,
+             const FPRegister& fm,
+             const FPRegister& fa);
+
+  // FP fused multiply and subtract.
   void fmsub(const FPRegister& fd,
              const FPRegister& fn,
              const FPRegister& fm,
              const FPRegister& fa);
+
+  // FP fused multiply, add and negate.
+  void fnmadd(const FPRegister& fd,
+              const FPRegister& fn,
+              const FPRegister& fm,
+              const FPRegister& fa);
+
+  // FP fused multiply, subtract and negate.
+  void fnmsub(const FPRegister& fd,
+              const FPRegister& fn,
+              const FPRegister& fm,
+              const FPRegister& fa);
 
   // FP divide.
   void fdiv(const FPRegister& fd, const FPRegister& fn, const FPRegister& fm);
@@ -1203,6 +1652,12 @@ class Assembler {
   // FP minimum.
   void fmin(const FPRegister& fd, const FPRegister& fn, const FPRegister& fm);
 
+  // FP maximum number.
+  void fmaxnm(const FPRegister& fd, const FPRegister& fn, const FPRegister& fm);
+
+  // FP minimum number.
+  void fminnm(const FPRegister& fd, const FPRegister& fn, const FPRegister& fm);
+
   // FP absolute.
   void fabs(const FPRegister& fd, const FPRegister& fn);
 
@@ -1212,8 +1667,23 @@ class Assembler {
   // FP square root.
   void fsqrt(const FPRegister& fd, const FPRegister& fn);
 
+  // FP round to integer (nearest with ties to away).
+  void frinta(const FPRegister& fd, const FPRegister& fn);
+
+  // FP round to integer (implicit rounding).
+  void frinti(const FPRegister& fd, const FPRegister& fn);
+
+  // FP round to integer (toward minus infinity).
+  void frintm(const FPRegister& fd, const FPRegister& fn);
+
   // FP round to integer (nearest with ties to even).
   void frintn(const FPRegister& fd, const FPRegister& fn);
+
+  // FP round to integer (toward plus infinity).
+  void frintp(const FPRegister& fd, const FPRegister& fn);
+
+  // FP round to integer (exact, implicit rounding).
+  void frintx(const FPRegister& fd, const FPRegister& fn);
 
   // FP round to integer (towards zero).
   void frintz(const FPRegister& fd, const FPRegister& fn);
@@ -1244,23 +1714,29 @@ class Assembler {
   // FP convert between single and double precision.
   void fcvt(const FPRegister& fd, const FPRegister& fn);
 
-  // Convert FP to unsigned integer (round towards -infinity).
-  void fcvtmu(const Register& rd, const FPRegister& fn);
+  // Convert FP to signed integer (nearest with ties to away).
+  void fcvtas(const Register& rd, const FPRegister& fn);
+
+  // Convert FP to unsigned integer (nearest with ties to away).
+  void fcvtau(const Register& rd, const FPRegister& fn);
 
   // Convert FP to signed integer (round towards -infinity).
   void fcvtms(const Register& rd, const FPRegister& fn);
 
-  // Convert FP to unsigned integer (nearest with ties to even).
-  void fcvtnu(const Register& rd, const FPRegister& fn);
+  // Convert FP to unsigned integer (round towards -infinity).
+  void fcvtmu(const Register& rd, const FPRegister& fn);
 
   // Convert FP to signed integer (nearest with ties to even).
   void fcvtns(const Register& rd, const FPRegister& fn);
 
-  // Convert FP to unsigned integer (round towards zero).
-  void fcvtzu(const Register& rd, const FPRegister& fn);
+  // Convert FP to unsigned integer (nearest with ties to even).
+  void fcvtnu(const Register& rd, const FPRegister& fn);
 
   // Convert FP to signed integer (round towards zero).
   void fcvtzs(const Register& rd, const FPRegister& fn);
+
+  // Convert FP to unsigned integer (round towards zero).
+  void fcvtzu(const Register& rd, const FPRegister& fn);
 
   // Convert signed integer or fixed point to FP.
   void scvtf(const FPRegister& fd, const Register& rn, unsigned fbits = 0);
@@ -1270,72 +1746,78 @@ class Assembler {
 
   // Emit generic instructions.
   // Emit raw instructions into the instruction stream.
-  inline void dci(Instr raw_inst) { Emit(raw_inst); }
+  void dci(Instr raw_inst) { Emit(raw_inst); }
 
   // Emit 32 bits of data into the instruction stream.
-  inline void dc32(uint32_t data) { EmitData(&data, sizeof(data)); }
+  void dc32(uint32_t data) {
+    VIXL_ASSERT(buffer_monitor_ > 0);
+    buffer_->Emit32(data);
+  }
 
   // Emit 64 bits of data into the instruction stream.
-  inline void dc64(uint64_t data) { EmitData(&data, sizeof(data)); }
+  void dc64(uint64_t data) {
+    VIXL_ASSERT(buffer_monitor_ > 0);
+    buffer_->Emit64(data);
+  }
 
   // Copy a string into the instruction stream, including the terminating NULL
-  // character. The instruction pointer (pc_) is then aligned correctly for
+  // character. The instruction pointer is then aligned correctly for
   // subsequent instructions.
-  void EmitStringData(const char * string) {
-    ASSERT(string != NULL);
+  void EmitString(const char * string) {
+    VIXL_ASSERT(string != NULL);
+    VIXL_ASSERT(buffer_monitor_ > 0);
 
-    size_t len = strlen(string) + 1;
-    EmitData(string, len);
-
-    // Pad with NULL characters until pc_ is aligned.
-    const char pad[] = {'\0', '\0', '\0', '\0'};
-    ASSERT(sizeof(pad) == kInstructionSize);
-    Instruction* next_pc = AlignUp(pc_, kInstructionSize);
-    EmitData(&pad, next_pc - pc_);
+    buffer_->EmitString(string);
+    buffer_->Align();
   }
 
   // Code generation helpers.
 
   // Register encoding.
   static Instr Rd(CPURegister rd) {
-    ASSERT(rd.code() != kSPRegInternalCode);
+    VIXL_ASSERT(rd.code() != kSPRegInternalCode);
     return rd.code() << Rd_offset;
   }
 
   static Instr Rn(CPURegister rn) {
-    ASSERT(rn.code() != kSPRegInternalCode);
+    VIXL_ASSERT(rn.code() != kSPRegInternalCode);
     return rn.code() << Rn_offset;
   }
 
   static Instr Rm(CPURegister rm) {
-    ASSERT(rm.code() != kSPRegInternalCode);
+    VIXL_ASSERT(rm.code() != kSPRegInternalCode);
     return rm.code() << Rm_offset;
   }
 
   static Instr Ra(CPURegister ra) {
-    ASSERT(ra.code() != kSPRegInternalCode);
+    VIXL_ASSERT(ra.code() != kSPRegInternalCode);
     return ra.code() << Ra_offset;
   }
 
   static Instr Rt(CPURegister rt) {
-    ASSERT(rt.code() != kSPRegInternalCode);
+    VIXL_ASSERT(rt.code() != kSPRegInternalCode);
     return rt.code() << Rt_offset;
   }
 
   static Instr Rt2(CPURegister rt2) {
-    ASSERT(rt2.code() != kSPRegInternalCode);
+    VIXL_ASSERT(rt2.code() != kSPRegInternalCode);
     return rt2.code() << Rt2_offset;
+  }
+
+  static Instr Rs(CPURegister rs) {
+    VIXL_ASSERT(rs.code() != kSPRegInternalCode);
+    return rs.code() << Rs_offset;
   }
 
   // These encoding functions allow the stack pointer to be encoded, and
   // disallow the zero register.
   static Instr RdSP(Register rd) {
-    ASSERT(!rd.IsZero());
+    VIXL_ASSERT(!rd.IsZero());
     return (rd.code() & kRegCodeMask) << Rd_offset;
   }
 
   static Instr RnSP(Register rn) {
-    ASSERT(!rn.IsZero());
+    VIXL_ASSERT(!rn.IsZero());
     return (rn.code() & kRegCodeMask) << Rn_offset;
   }
 
@@ -1346,7 +1828,7 @@ class Assembler {
     } else if (S == LeaveFlags) {
       return 0 << FlagsUpdate_offset;
     }
-    UNREACHABLE();
+    VIXL_UNREACHABLE();
     return 0;
   }
 
@@ -1356,7 +1838,7 @@ class Assembler {
 
   // PC-relative address encoding.
   static Instr ImmPCRelAddress(int imm21) {
-    ASSERT(is_int21(imm21));
+    VIXL_ASSERT(is_int21(imm21));
     Instr imm = static_cast<Instr>(truncate_to_int21(imm21));
     Instr immhi = (imm >> ImmPCRelLo_width) << ImmPCRelHi_offset;
     Instr immlo = imm << ImmPCRelLo_offset;
@@ -1365,27 +1847,27 @@ class Assembler {
 
   // Branch encoding.
   static Instr ImmUncondBranch(int imm26) {
-    ASSERT(is_int26(imm26));
+    VIXL_ASSERT(is_int26(imm26));
     return truncate_to_int26(imm26) << ImmUncondBranch_offset;
   }
 
   static Instr ImmCondBranch(int imm19) {
-    ASSERT(is_int19(imm19));
+    VIXL_ASSERT(is_int19(imm19));
     return truncate_to_int19(imm19) << ImmCondBranch_offset;
   }
 
   static Instr ImmCmpBranch(int imm19) {
-    ASSERT(is_int19(imm19));
+    VIXL_ASSERT(is_int19(imm19));
     return truncate_to_int19(imm19) << ImmCmpBranch_offset;
   }
 
   static Instr ImmTestBranch(int imm14) {
-    ASSERT(is_int14(imm14));
+    VIXL_ASSERT(is_int14(imm14));
     return truncate_to_int14(imm14) << ImmTestBranch_offset;
   }
 
   static Instr ImmTestBranchBit(unsigned bit_pos) {
-    ASSERT(is_uint6(bit_pos));
+    VIXL_ASSERT(is_uint6(bit_pos));
     // Subtract five from the shift offset, as we need bit 5 from bit_pos.
     unsigned b5 = bit_pos << (ImmTestBranchBit5_offset - 5);
     unsigned b40 = bit_pos << ImmTestBranchBit40_offset;
@@ -1400,7 +1882,7 @@ class Assembler {
   }
 
   static Instr ImmAddSub(int64_t imm) {
-    ASSERT(IsImmAddSub(imm));
+    VIXL_ASSERT(IsImmAddSub(imm));
     if (is_uint12(imm)) {  // No shift required.
       return imm << ImmAddSub_offset;
     } else {
@@ -1408,56 +1890,56 @@ class Assembler {
     }
   }
 
-  static inline Instr ImmS(unsigned imms, unsigned reg_size) {
-    ASSERT(((reg_size == kXRegSize) && is_uint6(imms)) ||
+  static Instr ImmS(unsigned imms, unsigned reg_size) {
+    VIXL_ASSERT(((reg_size == kXRegSize) && is_uint6(imms)) ||
            ((reg_size == kWRegSize) && is_uint5(imms)));
     USE(reg_size);
     return imms << ImmS_offset;
   }
 
-  static inline Instr ImmR(unsigned immr, unsigned reg_size) {
-    ASSERT(((reg_size == kXRegSize) && is_uint6(immr)) ||
+  static Instr ImmR(unsigned immr, unsigned reg_size) {
+    VIXL_ASSERT(((reg_size == kXRegSize) && is_uint6(immr)) ||
            ((reg_size == kWRegSize) && is_uint5(immr)));
     USE(reg_size);
-    ASSERT(is_uint6(immr));
+    VIXL_ASSERT(is_uint6(immr));
     return immr << ImmR_offset;
   }
 
-  static inline Instr ImmSetBits(unsigned imms, unsigned reg_size) {
-    ASSERT((reg_size == kWRegSize) || (reg_size == kXRegSize));
-    ASSERT(is_uint6(imms));
-    ASSERT((reg_size == kXRegSize) || is_uint6(imms + 3));
+  static Instr ImmSetBits(unsigned imms, unsigned reg_size) {
+    VIXL_ASSERT((reg_size == kWRegSize) || (reg_size == kXRegSize));
+    VIXL_ASSERT(is_uint6(imms));
+    VIXL_ASSERT((reg_size == kXRegSize) || is_uint6(imms + 3));
     USE(reg_size);
     return imms << ImmSetBits_offset;
   }
 
-  static inline Instr ImmRotate(unsigned immr, unsigned reg_size) {
-    ASSERT((reg_size == kWRegSize) || (reg_size == kXRegSize));
-    ASSERT(((reg_size == kXRegSize) && is_uint6(immr)) ||
+  static Instr ImmRotate(unsigned immr, unsigned reg_size) {
+    VIXL_ASSERT((reg_size == kWRegSize) || (reg_size == kXRegSize));
+    VIXL_ASSERT(((reg_size == kXRegSize) && is_uint6(immr)) ||
            ((reg_size == kWRegSize) && is_uint5(immr)));
     USE(reg_size);
     return immr << ImmRotate_offset;
   }
 
-  static inline Instr ImmLLiteral(int imm19) {
-    ASSERT(is_int19(imm19));
+  static Instr ImmLLiteral(int imm19) {
+    VIXL_ASSERT(is_int19(imm19));
     return truncate_to_int19(imm19) << ImmLLiteral_offset;
   }
 
-  static inline Instr BitN(unsigned bitn, unsigned reg_size) {
-    ASSERT((reg_size == kWRegSize) || (reg_size == kXRegSize));
-    ASSERT((reg_size == kXRegSize) || (bitn == 0));
+  static Instr BitN(unsigned bitn, unsigned reg_size) {
+    VIXL_ASSERT((reg_size == kWRegSize) || (reg_size == kXRegSize));
+    VIXL_ASSERT((reg_size == kXRegSize) || (bitn == 0));
     USE(reg_size);
     return bitn << BitN_offset;
   }
 
   static Instr ShiftDP(Shift shift) {
-    ASSERT(shift == LSL || shift == LSR || shift == ASR || shift == ROR);
+    VIXL_ASSERT(shift == LSL || shift == LSR || shift == ASR || shift == ROR);
     return shift << ShiftDP_offset;
   }
 
   static Instr ImmDPShift(unsigned amount) {
-    ASSERT(is_uint6(amount));
+    VIXL_ASSERT(is_uint6(amount));
     return amount << ImmDPShift_offset;
   }
 
@@ -1466,12 +1948,12 @@ class Assembler {
   }
 
   static Instr ImmExtendShift(unsigned left_shift) {
-    ASSERT(left_shift <= 4);
+    VIXL_ASSERT(left_shift <= 4);
     return left_shift << ImmExtendShift_offset;
   }
 
   static Instr ImmCondCmp(unsigned imm) {
-    ASSERT(is_uint5(imm));
+    VIXL_ASSERT(is_uint5(imm));
     return imm << ImmCondCmp_offset;
   }
 
@@ -1481,55 +1963,75 @@ class Assembler {
 
   // MemOperand offset encoding.
   static Instr ImmLSUnsigned(int imm12) {
-    ASSERT(is_uint12(imm12));
+    VIXL_ASSERT(is_uint12(imm12));
     return imm12 << ImmLSUnsigned_offset;
   }
 
   static Instr ImmLS(int imm9) {
-    ASSERT(is_int9(imm9));
+    VIXL_ASSERT(is_int9(imm9));
     return truncate_to_int9(imm9) << ImmLS_offset;
   }
 
   static Instr ImmLSPair(int imm7, LSDataSize size) {
-    ASSERT(((imm7 >> size) << size) == imm7);
+    VIXL_ASSERT(((imm7 >> size) << size) == imm7);
     int scaled_imm7 = imm7 >> size;
-    ASSERT(is_int7(scaled_imm7));
+    VIXL_ASSERT(is_int7(scaled_imm7));
     return truncate_to_int7(scaled_imm7) << ImmLSPair_offset;
   }
 
   static Instr ImmShiftLS(unsigned shift_amount) {
-    ASSERT(is_uint1(shift_amount));
+    VIXL_ASSERT(is_uint1(shift_amount));
     return shift_amount << ImmShiftLS_offset;
   }
 
+  static Instr ImmPrefetchOperation(int imm5) {
+    VIXL_ASSERT(is_uint5(imm5));
+    return imm5 << ImmPrefetchOperation_offset;
+  }
+
   static Instr ImmException(int imm16) {
-    ASSERT(is_uint16(imm16));
+    VIXL_ASSERT(is_uint16(imm16));
     return imm16 << ImmException_offset;
   }
 
   static Instr ImmSystemRegister(int imm15) {
-    ASSERT(is_uint15(imm15));
+    VIXL_ASSERT(is_uint15(imm15));
     return imm15 << ImmSystemRegister_offset;
   }
 
   static Instr ImmHint(int imm7) {
-    ASSERT(is_uint7(imm7));
+    VIXL_ASSERT(is_uint7(imm7));
     return imm7 << ImmHint_offset;
   }
 
+  static Instr CRm(int imm4) {
+    VIXL_ASSERT(is_uint4(imm4));
+    return imm4 << CRm_offset;
+  }
+
+  static Instr ImmBarrierDomain(int imm2) {
+    VIXL_ASSERT(is_uint2(imm2));
+    return imm2 << ImmBarrierDomain_offset;
+  }
+
+  static Instr ImmBarrierType(int imm2) {
+    VIXL_ASSERT(is_uint2(imm2));
+    return imm2 << ImmBarrierType_offset;
+  }
+
   static LSDataSize CalcLSDataSize(LoadStoreOp op) {
-    ASSERT((SizeLS_offset + SizeLS_width) == (kInstructionSize * 8));
+    VIXL_ASSERT((SizeLS_offset + SizeLS_width) == (kInstructionSize * 8));
     return static_cast<LSDataSize>(op >> SizeLS_offset);
   }
 
   // Move immediates encoding.
   static Instr ImmMoveWide(uint64_t imm) {
-    ASSERT(is_uint16(imm));
+    VIXL_ASSERT(is_uint16(imm));
     return imm << ImmMoveWide_offset;
   }
 
   static Instr ShiftMoveWide(int64_t shift) {
-    ASSERT(is_uint2(shift));
+    VIXL_ASSERT(is_uint2(shift));
     return shift << ShiftMoveWide_offset;
   }
 
@@ -1543,59 +2045,98 @@ class Assembler {
   }
 
   static Instr FPScale(unsigned scale) {
-    ASSERT(is_uint6(scale));
+    VIXL_ASSERT(is_uint6(scale));
     return scale << FPScale_offset;
   }
 
-  // Size of the code generated in bytes
-  uint64_t SizeOfCodeGenerated() const {
-    ASSERT((pc_ >= buffer_) && (pc_ < (buffer_ + buffer_size_)));
-    return pc_ - buffer_;
-  }
+  // Immediate field checking helpers.
+  static bool IsImmAddSub(int64_t immediate);
+  static bool IsImmConditionalCompare(int64_t immediate);
+  static bool IsImmFP32(float imm);
+  static bool IsImmFP64(double imm);
+  static bool IsImmLogical(uint64_t value,
+                           unsigned width,
+                           unsigned* n = NULL,
+                           unsigned* imm_s = NULL,
+                           unsigned* imm_r = NULL);
+  static bool IsImmLSPair(int64_t offset, LSDataSize size);
+  static bool IsImmLSScaled(int64_t offset, LSDataSize size);
+  static bool IsImmLSUnscaled(int64_t offset);
+  static bool IsImmMovn(uint64_t imm, unsigned reg_size);
+  static bool IsImmMovz(uint64_t imm, unsigned reg_size);
 
   // Size of the code generated since label to the current position.
-  uint64_t SizeOfCodeGeneratedSince(Label* label) const {
-    ASSERT(label->IsBound());
-    ASSERT((pc_ >= label->target()) && (pc_ < (buffer_ + buffer_size_)));
-    return pc_ - label->target();
+  size_t SizeOfCodeGeneratedSince(Label* label) const {
+    VIXL_ASSERT(label->IsBound());
+    return buffer_->OffsetFrom(label->location());
   }
 
-
-  inline void BlockLiteralPool() {
-    literal_pool_monitor_++;
+  size_t SizeOfCodeGenerated() const {
+    return buffer_->CursorOffset();
   }
 
-  inline void ReleaseLiteralPool() {
-    if (--literal_pool_monitor_ == 0) {
-      // Has the literal pool been blocked for too long?
-      ASSERT(literals_.empty() ||
-             (pc_ < (literals_.back()->pc_ + kMaxLoadLiteralRange)));
+  size_t BufferCapacity() const { return buffer_->capacity(); }
+
+  size_t RemainingBufferSpace() const { return buffer_->RemainingBytes(); }
+
+  void EnsureSpaceFor(size_t amount) {
+    if (buffer_->RemainingBytes() < amount) {
+      size_t capacity = buffer_->capacity();
+      size_t size = buffer_->CursorOffset();
+      do {
+        // TODO(all): refine.
+        capacity *= 2;
+      } while ((capacity - size) <  amount);
+      buffer_->Grow(capacity);
     }
   }
 
-  inline bool IsLiteralPoolBlocked() {
-    return literal_pool_monitor_ != 0;
+#ifdef VIXL_DEBUG
+  void AcquireBuffer() {
+    VIXL_ASSERT(buffer_monitor_ >= 0);
+    buffer_monitor_++;
   }
 
-  void CheckLiteralPool(LiteralPoolEmitOption option = JumpRequired);
-  void EmitLiteralPool(LiteralPoolEmitOption option = NoJumpRequired);
-  size_t LiteralPoolSize();
+  void ReleaseBuffer() {
+    buffer_monitor_--;
+    VIXL_ASSERT(buffer_monitor_ >= 0);
+  }
+#endif
 
- protected:
-  inline const Register& AppropriateZeroRegFor(const CPURegister& reg) const {
+  PositionIndependentCodeOption pic() const {
+    return pic_;
+  }
+
+  bool AllowPageOffsetDependentCode() const {
+    return (pic() == PageOffsetDependentCode) ||
+           (pic() == PositionDependentCode);
+  }
+
+  static const Register& AppropriateZeroRegFor(const CPURegister& reg) {
     return reg.Is64Bits() ? xzr : wzr;
   }
 
 
+ protected:
   void LoadStore(const CPURegister& rt,
                  const MemOperand& addr,
-                 LoadStoreOp op);
-  static bool IsImmLSUnscaled(ptrdiff_t offset);
-  static bool IsImmLSScaled(ptrdiff_t offset, LSDataSize size);
+                 LoadStoreOp op,
+                 LoadStoreScalingOption option = PreferScaledOffset);
 
+  void LoadStorePair(const CPURegister& rt,
+                     const CPURegister& rt2,
+                     const MemOperand& addr,
+                     LoadStorePairOp op);
+
+  void Prefetch(PrefetchOperation op,
+                const MemOperand& addr,
+                LoadStoreScalingOption option = PreferScaledOffset);
+
+  // TODO(all): The third parameter should be passed by reference but gcc 4.8.2
+  // reports a bogus uninitialised warning then.
   void Logical(const Register& rd,
                const Register& rn,
-               const Operand& operand,
+               const Operand operand,
                LogicalOp op);
   void LogicalImmediate(const Register& rd,
                         const Register& rn,
@@ -1603,24 +2144,19 @@ class Assembler {
                         unsigned imm_s,
                         unsigned imm_r,
                         LogicalOp op);
-  static bool IsImmLogical(uint64_t value,
-                           unsigned width,
-                           unsigned* n,
-                           unsigned* imm_s,
-                           unsigned* imm_r);
 
   void ConditionalCompare(const Register& rn,
                           const Operand& operand,
                           StatusFlags nzcv,
                           Condition cond,
                           ConditionalCompareOp op);
-  static bool IsImmConditionalCompare(int64_t immediate);
 
   void AddSubWithCarry(const Register& rd,
                        const Register& rn,
                        const Operand& operand,
                        FlagsUpdate S,
                        AddSubWithCarryOp op);
+
 
   // Functions for emulating operands not directly supported by the instruction
   // set.
@@ -1638,7 +2174,6 @@ class Assembler {
               const Operand& operand,
               FlagsUpdate S,
               AddSubOp op);
-  static bool IsImmAddSub(int64_t immediate);
 
   // Find an appropriate LoadStoreOp or LoadStorePairOp for the specified
   // registers. Only simple loads are supported; sign- and zero-extension (such
@@ -1653,6 +2188,7 @@ class Assembler {
     const CPURegister& rt, const CPURegister& rt2);
   static LoadStorePairNonTemporalOp StorePairNonTemporalOpFor(
     const CPURegister& rt, const CPURegister& rt2);
+  static LoadLiteralOp LoadLiteralOpFor(const CPURegister& rt);
 
 
  private:
@@ -1671,10 +2207,6 @@ class Assembler {
                                 const Operand& operand,
                                 FlagsUpdate S,
                                 Instr op);
-  void LoadStorePair(const CPURegister& rt,
-                     const CPURegister& rt2,
-                     const MemOperand& addr,
-                     LoadStorePairOp op);
   void LoadStorePairNonTemporal(const CPURegister& rt,
                                 const CPURegister& rt2,
                                 const MemOperand& addr,
@@ -1706,79 +2238,116 @@ class Assembler {
                                const FPRegister& fa,
                                FPDataProcessing3SourceOp op);
 
-  // Encoding helpers.
-  static bool IsImmFP32(float imm);
-  static bool IsImmFP64(double imm);
+  // Encode the specified MemOperand for the specified access size and scaling
+  // preference.
+  Instr LoadStoreMemOperand(const MemOperand& addr,
+                            LSDataSize size,
+                            LoadStoreScalingOption option);
 
-  void RecordLiteral(int64_t imm, unsigned size);
+  // Link the current (not-yet-emitted) instruction to the specified label, then
+  // return an offset to be encoded in the instruction. If the label is not yet
+  // bound, an offset of 0 is returned.
+  ptrdiff_t LinkAndGetByteOffsetTo(Label * label);
+  ptrdiff_t LinkAndGetInstructionOffsetTo(Label * label);
+  ptrdiff_t LinkAndGetPageOffsetTo(Label * label);
 
-  // Emit the instruction at pc_.
+  // A common implementation for the LinkAndGet<Type>OffsetTo helpers.
+  template <int element_shift>
+  ptrdiff_t LinkAndGetOffsetTo(Label* label);
+
+  // Literal load offset are in words (32-bit).
+  ptrdiff_t LinkAndGetWordOffsetTo(RawLiteral* literal);
+
+  // Emit the instruction in buffer_.
   void Emit(Instr instruction) {
-    ASSERT(sizeof(*pc_) == 1);
-    ASSERT(sizeof(instruction) == kInstructionSize);
-    ASSERT((pc_ + sizeof(instruction)) <= (buffer_ + buffer_size_));
-
-#ifdef DEBUG
-    finalized_ = false;
-#endif
-
-    memcpy(pc_, &instruction, sizeof(instruction));
-    pc_ += sizeof(instruction);
-    CheckBufferSpace();
+    VIXL_STATIC_ASSERT(sizeof(instruction) == kInstructionSize);
+    VIXL_ASSERT(buffer_monitor_ > 0);
+    buffer_->Emit32(instruction);
   }
 
-  // Emit data inline in the instruction stream.
-  void EmitData(void const * data, unsigned size) {
-    ASSERT(sizeof(*pc_) == 1);
-    ASSERT((pc_ + size) <= (buffer_ + buffer_size_));
+  // Buffer where the code is emitted.
+  CodeBuffer* buffer_;
+  PositionIndependentCodeOption pic_;
 
-#ifdef DEBUG
-    finalized_ = false;
-#endif
-
-    // TODO: Record this 'instruction' as data, so that it can be disassembled
-    // correctly.
-    memcpy(pc_, data, size);
-    pc_ += size;
-    CheckBufferSpace();
-  }
-
-  inline void CheckBufferSpace() {
-    ASSERT(pc_ < (buffer_ + buffer_size_));
-    if (pc_ > next_literal_pool_check_) {
-      CheckLiteralPool();
-    }
-  }
-
-  // The buffer into which code and relocation info are generated.
-  Instruction* buffer_;
-  // Buffer size, in bytes.
-  unsigned buffer_size_;
-  Instruction* pc_;
-  std::list<Literal*> literals_;
-  Instruction* next_literal_pool_check_;
-  unsigned literal_pool_monitor_;
-
-  friend class BlockLiteralPoolScope;
-
-#ifdef DEBUG
-  bool finalized_;
+#ifdef VIXL_DEBUG
+  int64_t buffer_monitor_;
 #endif
 };
 
-class BlockLiteralPoolScope {
+
+// All Assembler emits MUST acquire/release the underlying code buffer. The
+// helper scope below will do so and optionally ensure the buffer is big enough
+// to receive the emit. It is possible to request the scope not to perform any
+// checks (kNoCheck) if for example it is known in advance the buffer size is
+// adequate or there is some other size checking mechanism in place.
+class CodeBufferCheckScope {
  public:
-  explicit BlockLiteralPoolScope(Assembler* assm) : assm_(assm) {
-    assm_->BlockLiteralPool();
+  // Tell whether or not the scope needs to ensure the associated CodeBuffer
+  // has enough space for the requested size.
+  enum CheckPolicy {
+    kNoCheck,
+    kCheck
+  };
+
+  // Tell whether or not the scope should assert the amount of code emitted
+  // within the scope is consistent with the requested amount.
+  enum AssertPolicy {
+    kNoAssert,    // No assert required.
+    kExactSize,   // The code emitted must be exactly size bytes.
+    kMaximumSize  // The code emitted must be at most size bytes.
+  };
+
+  CodeBufferCheckScope(Assembler* assm,
+                       size_t size,
+                       CheckPolicy check_policy = kCheck,
+                       AssertPolicy assert_policy = kMaximumSize)
+      : assm_(assm) {
+    if (check_policy == kCheck) assm->EnsureSpaceFor(size);
+#ifdef VIXL_DEBUG
+    assm->bind(&start_);
+    size_ = size;
+    assert_policy_ = assert_policy;
+    assm->AcquireBuffer();
+#else
+    USE(assert_policy);
+#endif
   }
 
-  ~BlockLiteralPoolScope() {
-    assm_->ReleaseLiteralPool();
+  // This is a shortcut for CodeBufferCheckScope(assm, 0, kNoCheck, kNoAssert).
+  explicit CodeBufferCheckScope(Assembler* assm) : assm_(assm) {
+#ifdef VIXL_DEBUG
+    size_ = 0;
+    assert_policy_ = kNoAssert;
+    assm->AcquireBuffer();
+#endif
   }
 
- private:
+  ~CodeBufferCheckScope() {
+#ifdef VIXL_DEBUG
+    assm_->ReleaseBuffer();
+    switch (assert_policy_) {
+      case kNoAssert: break;
+      case kExactSize:
+        VIXL_ASSERT(assm_->SizeOfCodeGeneratedSince(&start_) == size_);
+        break;
+      case kMaximumSize:
+        VIXL_ASSERT(assm_->SizeOfCodeGeneratedSince(&start_) <= size_);
+        break;
+      default:
+        VIXL_UNREACHABLE();
+    }
+#endif
+  }
+
+ protected:
   Assembler* assm_;
+#ifdef VIXL_DEBUG
+  Label start_;
+  size_t size_;
+  AssertPolicy assert_policy_;
+#endif
 };
+
 }  // namespace vixl
 
 #endif  // VIXL_A64_ASSEMBLER_A64_H_
